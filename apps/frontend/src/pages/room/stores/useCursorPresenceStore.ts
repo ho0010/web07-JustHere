@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { CursorInfoWithId, YjsAwarenessBroadcast } from '@/shared/types'
+import { recordCanvasPerformanceCursorStoreCommit } from '@/pages/room/perf/canvasPerformance'
 
 interface CursorPresenceState {
   cursors: Map<string, CursorInfoWithId>
@@ -26,6 +27,7 @@ export const useCursorPresenceStore = create<CursorPresenceState>((set, get) => 
       next.delete(socketId)
     }
     set({ cursors: next })
+    recordCanvasPerformanceCursorStoreCommit()
   },
   clearCursors: () => {
     if (get().cursors.size === 0) return

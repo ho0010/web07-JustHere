@@ -85,8 +85,10 @@ export const CanvasPerformanceOverlay = ({ itemCounts }: CanvasPerformanceOverla
 
   if (!isCanvasPerformanceEnabled) return null
 
+  const reactRenderP95 = snapshot?.durations.reactRender?.p95Ms
+
   return (
-    <aside className="absolute right-3 top-3 z-50 w-72 rounded-lg bg-slate-950/90 p-3 font-mono text-[11px] leading-5 text-slate-100 shadow-xl">
+    <aside className="absolute right-3 top-3 z-50 w-80 rounded-lg bg-slate-950/90 p-3 font-mono text-[11px] leading-5 text-slate-100 shadow-xl">
       <div className="mb-2 flex items-center justify-between">
         <strong className="text-xs text-emerald-300">Canvas Perf</strong>
         <div className="flex gap-2">
@@ -106,10 +108,14 @@ export const CanvasPerformanceOverlay = ({ itemCounts }: CanvasPerformanceOverla
             FPS: {snapshot.frames.fps} · frame p95: {snapshot.frames.p95Ms} ms
           </div>
           <div>
-            16.67ms 초과: {(snapshot.frames.overBudgetRatio * 100).toFixed(1)}% · long task: {snapshot.longTasks.count}
+            {snapshot.frames.slowFrameThresholdMs}ms 초과: {(snapshot.frames.slowFrameRatio * 100).toFixed(1)}% · long task:{' '}
+            {snapshot.longTasks.count}
           </div>
           <div>
             Yjs 수신: {snapshot.inboundYjs.updates}/s · {formatBytes(snapshot.inboundYjs.binaryBytes)}/s
+          </div>
+          <div>
+            Cursor: awareness {snapshot.cursorPipeline.awarenessReceived}/s · store {snapshot.cursorPipeline.storeCommits}/s
           </div>
           <div>Yjs apply p95: {snapshot.durations.yjsUpdateApply?.p95Ms ?? 0} ms</div>
           <div>
@@ -123,8 +129,10 @@ export const CanvasPerformanceOverlay = ({ itemCounts }: CanvasPerformanceOverla
             )}{' '}
             ms
           </div>
-          <div>React render p95: {snapshot.durations.reactRender?.p95Ms ?? 0} ms</div>
-          <div>Konva draw p95: {snapshot.durations.mainLayerDraw?.p95Ms ?? 0} ms</div>
+          <div>React render p95: {reactRenderP95 == null ? 'N/A' : `${reactRenderP95} ms`}</div>
+          <div>
+            Konva draw p95: main {snapshot.durations.mainLayerDraw?.p95Ms ?? 0} ms · cursor {snapshot.durations.cursorLayerDraw?.p95Ms ?? 0} ms
+          </div>
         </>
       ) : (
         <div className="text-slate-400">첫 1초 표본을 수집하는 중...</div>

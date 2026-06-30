@@ -9,8 +9,9 @@
 1. Socket.IO로 받은 Yjs update 적용 시간
 2. Yjs shared type 전체를 React state로 투영하는 시간
 3. 해당 commit을 위해 React가 렌더링한 시간
-4. Konva 메인 Layer draw 시간
-5. frame 간격, long task, 수신 update 수와 binary 크기
+4. Konva 메인 Layer와 Cursor Layer draw 시간
+5. awareness 수신과 Cursor store 반영 횟수
+6. frame 간격, long task, 수신 update 수와 binary 크기
 
 ## 주의사항
 
@@ -123,11 +124,11 @@ pnpm --filter frontend perf:canvas:load -- \
 
 ## 6. 결과 기록 양식
 
-| 조건          | FPS | frame p95 | 16.67ms 초과율 | long task | Yjs apply p95 | 상태 투영 p95 | React render p95 | Konva draw p95 |
-| ------------- | --: | --------: | -------------: | --------: | ------------: | ------------: | ---------------: | -------------: |
-| small / 10명  |     |           |                |           |               |               |                  |                |
-| medium / 30명 |     |           |                |           |               |               |                  |                |
-| large / 50명  |     |           |                |           |               |               |                  |                |
+| 조건          | FPS | frame p95 | 20ms 초과율 | long task | awareness/s | store/s | Yjs apply p95 | 상태 투영 p95 | Main draw p95 | Cursor draw p95 |
+| ------------- | --: | --------: | ----------: | --------: | ----------: | ------: | ------------: | ------------: | ------------: | --------------: |
+| small / 10명  |     |           |             |           |             |         |               |               |               |                 |
+| medium / 30명 |     |           |             |           |             |         |               |               |               |                 |
+| large / 50명  |     |           |             |           |             |         |               |               |               |                 |
 
 ## 7. 수치에 따른 다음 작업 선택
 
@@ -135,6 +136,7 @@ pnpm --filter frontend perf:canvas:load -- \
 - `reactRender`가 커지면: 객체 단위 구독, props 안정화, 렌더 범위 분리를 우선한다.
 - `mainLayerDraw`가 커지면: viewport culling, 정적/동적 Layer 분리, hit graph 범위 축소를 비교한다.
 - `yjsUpdateApply`와 수신량이 커지면: 라인의 `points` 전체 교체와 `number[]` 전송을 chunk/binary update 관점에서 개선한다.
-- cursor-only에서 frame만 나빠지면: 커서별 animation loop와 Cursor Layer 갱신 구조를 우선 분석한다.
+- cursor-only에서 `awareness/s`와 `store/s`가 함께 높으면: awareness를 frame 단위로 배치한다.
+- `cursorLayerDraw`가 높으면: 커서별 animation loop를 Layer 단위로 통합하고 `Html` 렌더링 비용을 분석한다.
 
 최적화 PR에서는 위 항목 중 기준선에서 가장 큰 병목 하나만 선택하고, 동일한 seed와 시나리오로 전후 수치를 비교한다.

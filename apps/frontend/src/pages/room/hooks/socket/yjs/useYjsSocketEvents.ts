@@ -4,7 +4,7 @@ import type { Socket } from 'socket.io-client'
 import type { CanvasAttachedPayload, YjsAwarenessBroadcast, YjsUpdateBroadcast } from '@/shared/types'
 import { addSocketBreadcrumb } from '@/shared/utils'
 import { CANVAS_EVENTS, YJS_EVENTS } from '@/pages/room/constants'
-import { measureCanvasPerformance, recordCanvasPerformanceInboundUpdate } from '@/pages/room/perf'
+import { measureCanvasPerformance, recordCanvasPerformanceAwarenessReceived, recordCanvasPerformanceInboundUpdate } from '@/pages/room/perf'
 
 interface UseYjsSocketEventsOptions {
   resolveSocket: () => Socket | null
@@ -53,6 +53,7 @@ export const useYjsSocketEvents = ({
     }
 
     const handleAwareness = (payload: YjsAwarenessBroadcast) => {
+      recordCanvasPerformanceAwarenessReceived()
       trackHighFreq(YJS_EVENTS.awarenessRecv)
       applyAwareness(payload)
     }

@@ -10,6 +10,7 @@ export type CanvasDurationMetric =
   | 'projectZIndex'
   | 'reactRender'
   | 'mainLayerDraw'
+  | 'cursorLayerDraw'
 
 export interface CanvasItemCounts {
   postits: number
@@ -36,7 +37,8 @@ export interface CanvasPerformanceSnapshot {
     fps: number
     p95Ms: number
     maxMs: number
-    overBudgetRatio: number
+    slowFrameThresholdMs: number
+    slowFrameRatio: number
   }
   longTasks: {
     count: number
@@ -46,6 +48,10 @@ export interface CanvasPerformanceSnapshot {
   inboundYjs: {
     updates: number
     binaryBytes: number
+  }
+  cursorPipeline: {
+    awarenessReceived: number
+    storeCommits: number
   }
   durations: Partial<Record<CanvasDurationMetric, DurationSummary>>
 }
@@ -57,9 +63,12 @@ interface WindowState {
   longTaskDurations: number[]
   inboundUpdates: number
   inboundBytes: number
+  awarenessReceived: number
+  cursorStoreCommits: number
 }
 
 const HISTORY_LIMIT = 300
+const SLOW_FRAME_THRESHOLD_MS = 20
 
 const createWindowState = (): WindowState => ({
   startedAt: performance.now(),
@@ -68,6 +77,8 @@ const createWindowState = (): WindowState => ({
   longTaskDurations: [],
   inboundUpdates: 0,
   inboundBytes: 0,
+  awarenessReceived: 0,
+  cursorStoreCommits: 0,
 })
 
 let currentWindow = createWindowState()
@@ -125,6 +136,16 @@ export const recordCanvasPerformanceInboundUpdate = (binaryBytes: number) => {
   currentWindow.inboundBytes += binaryBytes
 }
 
+export const recordCanvasPerformanceAwarenessReceived = () => {
+  if (!isCanvasPerformanceEnabled) return
+  currentWindow.awarenessReceived += 1
+}
+
+export const recordCanvasPerformanceCursorStoreCommit = () => {
+  if (!isCanvasPerformanceEnabled) return
+  currentWindow.cursorStoreCommits += 1
+}
+
 export const takeCanvasPerformanceSnapshot = (itemCounts: CanvasItemCounts): CanvasPerformanceSnapshot => {
   const capturedAt = new Date().toISOString()
   const now = performance.now()
@@ -145,9 +166,10 @@ export const takeCanvasPerformanceSnapshot = (itemCounts: CanvasItemCounts): Can
       fps: frameTotalMs > 0 ? round((windowState.frameDurations.length * 1000) / frameTotalMs) : 0,
       p95Ms: round(percentile(windowState.frameDurations, 0.95)),
       maxMs: windowState.frameDurations.length > 0 ? round(Math.max(...windowState.frameDurations)) : 0,
-      overBudgetRatio:
+      slowFrameThresholdMs: SLOW_FRAME_THRESHOLD_MS,
+      slowFrameRatio:
         windowState.frameDurations.length > 0
-          ? round(windowState.frameDurations.filter(duration => duration > 16.67).length / windowState.frameDurations.length)
+          ? round(windowState.frameDurations.filter(duration => duration > SLOW_FRAME_THRESHOLD_MS).length / windowState.frameDurations.length)
           : 0,
     },
     longTasks: {
@@ -158,6 +180,10 @@ export const takeCanvasPerformanceSnapshot = (itemCounts: CanvasItemCounts): Can
     inboundYjs: {
       updates: windowState.inboundUpdates,
       binaryBytes: windowState.inboundBytes,
+    },
+    cursorPipeline: {
+      awarenessReceived: windowState.awarenessReceived,
+      storeCommits: windowState.cursorStoreCommits,
     },
     durations,
   }
@@ -172,7 +198,7 @@ export const resetCanvasPerformance = () => {
 }
 
 export const exportCanvasPerformanceReport = () => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   exportedAt: new Date().toISOString(),
   page: window.location.href,
   userAgent: navigator.userAgent,
