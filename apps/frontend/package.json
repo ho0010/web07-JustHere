@@ -9,6 +9,7 @@
     "build:analyze": "tsc -b && cross-env ANALYZE=true vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "perf:canvas:load": "node scripts/canvas-load.mjs",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "generate:icons": "node scripts/generate-icons.mjs"
