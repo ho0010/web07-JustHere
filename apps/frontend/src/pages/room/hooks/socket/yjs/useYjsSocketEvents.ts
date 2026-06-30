@@ -4,6 +4,7 @@ import type { Socket } from 'socket.io-client'
 import type { CanvasAttachedPayload, YjsAwarenessBroadcast, YjsUpdateBroadcast } from '@/shared/types'
 import { addSocketBreadcrumb } from '@/shared/utils'
 import { CANVAS_EVENTS, YJS_EVENTS } from '@/pages/room/constants'
+import { measureCanvasPerformance, recordCanvasPerformanceInboundUpdate } from '@/pages/room/perf'
 
 interface UseYjsSocketEventsOptions {
   resolveSocket: () => Socket | null
@@ -35,7 +36,7 @@ export const useYjsSocketEvents = ({
       if (!update) return
 
       const updateArray = new Uint8Array(update)
-      YapplyUpdate(doc, updateArray, socket)
+      measureCanvasPerformance('yjsInitialApply', () => YapplyUpdate(doc, updateArray, socket))
       addSocketBreadcrumb(CANVAS_EVENTS.attached, { roomId, canvasId, bytes: updateArray.byteLength })
     }
 
@@ -46,7 +47,8 @@ export const useYjsSocketEvents = ({
     const handleYjsUpdate = ({ canvasId: payloadCanvasId, update }: YjsUpdateBroadcast) => {
       if (payloadCanvasId !== canvasId) return
       const updateArray = new Uint8Array(update)
-      YapplyUpdate(doc, updateArray, socket)
+      recordCanvasPerformanceInboundUpdate(updateArray.byteLength)
+      measureCanvasPerformance('yjsUpdateApply', () => YapplyUpdate(doc, updateArray, socket))
       trackHighFreq(YJS_EVENTS.updateRecv, updateArray.byteLength)
     }
 

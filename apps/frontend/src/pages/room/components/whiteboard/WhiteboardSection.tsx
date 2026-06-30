@@ -5,6 +5,7 @@ import { GoogleMap } from '@/shared/components/google-map'
 import { cn } from '@/shared/utils'
 import type { Category, GooglePlace, PlaceCard, ToggleType } from '@/shared/types'
 import { AddCategoryModal } from '@/pages/room/components/add-category'
+import { CanvasRenderProfiler } from '@/pages/room/perf'
 import { DeleteCategoryModal } from './delete-category'
 import { WhiteboardCanvas } from './canvas'
 
@@ -180,15 +181,17 @@ export const WhiteboardSection = ({
 
       <main className="flex-1 bg-slate-50 overflow-hidden relative" role="tabpanel">
         {viewMode === 'canvas' ? (
-          <WhiteboardCanvas
-            roomId={roomId}
-            canvasId={activeCategoryId}
-            pendingPlaceCard={pendingPlaceCard}
-            onPlaceCardPlaced={onPlaceCardPlaced}
-            onPlaceCardCanceled={onPlaceCardCanceled}
-            onShowDetail={onShowDetail}
-            canvasTransformRef={canvasTransformRef}
-          />
+          <CanvasRenderProfiler>
+            <WhiteboardCanvas
+              roomId={roomId}
+              canvasId={activeCategoryId}
+              pendingPlaceCard={pendingPlaceCard}
+              onPlaceCardPlaced={onPlaceCardPlaced}
+              onPlaceCardCanceled={onPlaceCardCanceled}
+              onShowDetail={onShowDetail}
+              canvasTransformRef={canvasTransformRef}
+            />
+          </CanvasRenderProfiler>
         ) : (
           <div className="w-full h-full bg-slate-100 flex items-center justify-center text-slate-400">
             <GoogleMap markers={searchResults} selectedMarkerId={selectedPlace?.id} onMarkerClick={onMarkerClick} center={mapCenter} />
