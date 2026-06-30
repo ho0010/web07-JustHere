@@ -6,6 +6,7 @@ import { addSocketBreadcrumb, cn, getOrCreateStoredUser } from '@/shared/utils'
 import { CANVAS_ITEM_TYPE, type PlaceCard, type SelectedItem, type ToolType } from '@/shared/types'
 import { getLineBoundingBox, makeKey, createSelectedItemsSet } from '@/pages/room/utils'
 import { DEFAULT_LINE } from '@/pages/room/constants'
+import { CanvasPerformanceOverlay, isCanvasPerformanceEnabled, recordCanvasPerformanceDuration, type CanvasItemCounts } from '@/pages/room/perf'
 import {
   useCanvasTransform,
   useCursorChat,
@@ -66,6 +67,8 @@ export const WhiteboardCanvas = ({
   onShowDetail,
 }: WhiteboardCanvasProps) => {
   const stageRef = useRef<Konva.Stage>(null)
+  const mainLayerRef = useRef<Konva.Layer>(null)
+  const mainLayerDrawStartedAtRef = useRef(0)
   const transformerRef = useRef<Konva.Transformer>(null)
   const shapeRefs = useRef(new Map<string, Konva.Group>())
 
@@ -299,6 +302,28 @@ export const WhiteboardCanvas = ({
     }
   }, [canvasId])
 
+  useEffect(() => {
+    if (!isCanvasPerformanceEnabled) return
+    const layer = mainLayerRef.current
+    if (!layer) return
+
+    const handleBeforeDraw = () => {
+      mainLayerDrawStartedAtRef.current = performance.now()
+    }
+    const handleDraw = () => {
+      if (mainLayerDrawStartedAtRef.current === 0) return
+      recordCanvasPerformanceDuration('mainLayerDraw', performance.now() - mainLayerDrawStartedAtRef.current)
+      mainLayerDrawStartedAtRef.current = 0
+    }
+
+    layer.on('beforeDraw.canvasPerformance', handleBeforeDraw)
+    layer.on('draw.canvasPerformance', handleDraw)
+    return () => {
+      layer.off('beforeDraw.canvasPerformance', handleBeforeDraw)
+      layer.off('draw.canvasPerformance', handleDraw)
+    }
+  }, [])
+
   const linesMap = useMemo(() => new Map(lines.map(line => [line.id, line])), [lines])
   const postItsMap = useMemo(() => new Map(postIts.map(postIt => [postIt.id, postIt])), [postIts])
   const placeCardsMap = useMemo(() => new Map(placeCards.map(card => [card.id, card])), [placeCards])
@@ -323,6 +348,17 @@ export const WhiteboardCanvas = ({
   }, [pendingPlaceCard, effectiveTool])
 
   const canDrag = useMemo(() => effectiveTool === 'cursor' && !pendingPlaceCard, [effectiveTool, pendingPlaceCard])
+
+  const performanceItemCounts = useMemo<Omit<CanvasItemCounts, 'cursors'>>(
+    () => ({
+      postits: postIts.length,
+      placeCards: placeCards.length,
+      lines: lines.length,
+      linePoints: lines.reduce((total, line) => total + line.points.length / 2, 0),
+      textBoxes: textBoxes.length,
+    }),
+    [lines, placeCards.length, postIts.length, textBoxes.length],
+  )
 
   return (
     <div className={cn('relative w-full h-full bg-slate-50', cursorStyle)} onContextMenu={e => e.preventDefault()} role="presentation">
@@ -368,7 +404,7 @@ export const WhiteboardCanvas = ({
         onContextMenu={e => e.evt.preventDefault()}
         onDragEnd={handleDragEnd}
       >
-        <Layer>
+        <Layer ref={mainLayerRef}>
           {zIndexOrder.map(({ type, id }) => {
             if (type === CANVAS_ITEM_TYPE.LINE) {
               const line = linesMap.get(id)
@@ -548,6 +584,7 @@ export const WhiteboardCanvas = ({
 
         <CursorLayer />
       </Stage>
+      <CanvasPerformanceOverlay itemCounts={performanceItemCounts} />
     </div>
   )
 }

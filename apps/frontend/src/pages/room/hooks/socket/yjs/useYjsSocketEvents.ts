@@ -4,6 +4,7 @@ import type { Socket } from 'socket.io-client'
 import type { CanvasAttachedPayload, YjsAwarenessBroadcast, YjsUpdateBroadcast } from '@/shared/types'
 import { addSocketBreadcrumb } from '@/shared/utils'
 import { CANVAS_EVENTS, YJS_EVENTS } from '@/pages/room/constants'
+import { measureCanvasPerformance, recordCanvasPerformanceAwarenessReceived, recordCanvasPerformanceInboundUpdate } from '@/pages/room/perf'
 
 interface UseYjsSocketEventsOptions {
   resolveSocket: () => Socket | null
@@ -35,34 +36,36 @@ export const useYjsSocketEvents = ({
       if (!update) return
 
       const updateArray = new Uint8Array(update)
-      YapplyUpdate(doc, updateArray, socket)
-      addSocketBreadcrumb(CANVAS_EVENTS.attach, { roomId, canvasId, bytes: updateArray.byteLength })
+      measureCanvasPerformance('yjsInitialApply', () => YapplyUpdate(doc, updateArray, socket))
+      addSocketBreadcrumb(CANVAS_EVENTS.attached, { roomId, canvasId, bytes: updateArray.byteLength })
     }
 
     const handleCanvasDetached = () => {
-      addSocketBreadcrumb(CANVAS_EVENTS.detach, { roomId, canvasId })
+      addSocketBreadcrumb(CANVAS_EVENTS.detached, { roomId, canvasId })
     }
 
     const handleYjsUpdate = ({ canvasId: payloadCanvasId, update }: YjsUpdateBroadcast) => {
       if (payloadCanvasId !== canvasId) return
       const updateArray = new Uint8Array(update)
-      YapplyUpdate(doc, updateArray, socket)
+      recordCanvasPerformanceInboundUpdate(updateArray.byteLength)
+      measureCanvasPerformance('yjsUpdateApply', () => YapplyUpdate(doc, updateArray, socket))
       trackHighFreq(YJS_EVENTS.updateRecv, updateArray.byteLength)
     }
 
     const handleAwareness = (payload: YjsAwarenessBroadcast) => {
+      recordCanvasPerformanceAwarenessReceived()
       trackHighFreq(YJS_EVENTS.awarenessRecv)
       applyAwareness(payload)
     }
 
-    socket.on(CANVAS_EVENTS.attach, handleCanvasAttached)
-    socket.on(CANVAS_EVENTS.detach, handleCanvasDetached)
+    socket.on(CANVAS_EVENTS.attached, handleCanvasAttached)
+    socket.on(CANVAS_EVENTS.detached, handleCanvasDetached)
     socket.on(YJS_EVENTS.update, handleYjsUpdate)
     socket.on(YJS_EVENTS.awareness, handleAwareness)
 
     return () => {
-      socket.off(CANVAS_EVENTS.attach, handleCanvasAttached)
-      socket.off(CANVAS_EVENTS.detach, handleCanvasDetached)
+      socket.off(CANVAS_EVENTS.attached, handleCanvasAttached)
+      socket.off(CANVAS_EVENTS.detached, handleCanvasDetached)
       socket.off(YJS_EVENTS.update, handleYjsUpdate)
       socket.off(YJS_EVENTS.awareness, handleAwareness)
     }
