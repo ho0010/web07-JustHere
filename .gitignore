@@ -22,3 +22,9 @@ coverage/
 Thumbs.db
 .idea/
 .vscode/
+
+# local database volumes
+/data/
+
+# raw performance captures
+/docs/performance/results/raw/
