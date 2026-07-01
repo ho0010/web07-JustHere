@@ -402,3 +402,5 @@ commit: perf: 커서 awareness 반영을 프레임 단위로 배치
 ```
 
 첫 최적화 PR에는 awareness 배치 처리만 넣고 같은 cursor-only 조건으로 Before/After를 비교한다. animation 통합이나 Html 제거까지 한 번에 넣으면 어떤 변경이 효과가 있었는지 알기 어려우므로, 첫 결과를 본 뒤 다음 작업으로 분리할 생각이다.
+
+후속 최적화 결과는 [awareness 배치만으로 부족했던 커서 병목을 공유 Scheduler로 해결하기](./cursor-pipeline-optimization.md)에 이어서 정리했다.
