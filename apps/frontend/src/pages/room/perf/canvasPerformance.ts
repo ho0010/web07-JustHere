@@ -58,6 +58,11 @@ export interface CanvasPerformanceSnapshot {
     awarenessReceived: number
     storeCommits: number
   }
+  projectionPipeline: {
+    fullCollectionScans: number
+    incrementalPatches: number
+    projectedItems: number
+  }
   panPipeline: {
     stageDragMoves: number
     bitmapCacheCreates: number
@@ -76,6 +81,9 @@ interface WindowState {
   inboundBytes: number
   awarenessReceived: number
   cursorStoreCommits: number
+  projectionFullCollectionScans: number
+  projectionIncrementalPatches: number
+  projectedItems: number
   stageDragMoves: number
   bitmapCacheCreates: number
   bitmapCacheSkips: number
@@ -93,6 +101,9 @@ const createWindowState = (): WindowState => ({
   inboundBytes: 0,
   awarenessReceived: 0,
   cursorStoreCommits: 0,
+  projectionFullCollectionScans: 0,
+  projectionIncrementalPatches: 0,
+  projectedItems: 0,
   stageDragMoves: 0,
   bitmapCacheCreates: 0,
   bitmapCacheSkips: 0,
@@ -164,6 +175,16 @@ export const recordCanvasPerformanceCursorStoreCommit = () => {
   currentWindow.cursorStoreCommits += 1
 }
 
+export const recordCanvasPerformanceProjection = (mode: 'full' | 'incremental', itemCount: number) => {
+  if (!isCanvasPerformanceEnabled) return
+  if (mode === 'full') {
+    currentWindow.projectionFullCollectionScans += 1
+  } else {
+    currentWindow.projectionIncrementalPatches += 1
+  }
+  currentWindow.projectedItems += Math.max(0, itemCount)
+}
+
 export const recordCanvasPerformanceStagePanMove = () => {
   if (!isCanvasPerformanceEnabled) return
   currentWindow.stageDragMoves += 1
@@ -224,6 +245,11 @@ export const takeCanvasPerformanceSnapshot = (itemCounts: CanvasItemCounts): Can
       awarenessReceived: windowState.awarenessReceived,
       storeCommits: windowState.cursorStoreCommits,
     },
+    projectionPipeline: {
+      fullCollectionScans: windowState.projectionFullCollectionScans,
+      incrementalPatches: windowState.projectionIncrementalPatches,
+      projectedItems: windowState.projectedItems,
+    },
     panPipeline: {
       stageDragMoves: windowState.stageDragMoves,
       bitmapCacheCreates: windowState.bitmapCacheCreates,
@@ -243,7 +269,7 @@ export const resetCanvasPerformance = () => {
 }
 
 export const exportCanvasPerformanceReport = () => ({
-  schemaVersion: 5,
+  schemaVersion: 6,
   exportedAt: new Date().toISOString(),
   page: window.location.href,
   userAgent: navigator.userAgent,

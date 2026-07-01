@@ -3,7 +3,7 @@ import { Doc as YDoc, Map as YMap } from 'yjs'
 import type { Line, PlaceCard, PostIt, TextBox } from '@/shared/types'
 import { CANVAS_ITEM_TYPE, YJS_TYPE } from '@/shared/types'
 import { PLACE_CARD_HEIGHT, PLACE_CARD_WIDTH } from '@/pages/room/constants'
-import { measureCanvasPerformance } from '@/pages/room/perf'
+import { measureCanvasPerformance, recordCanvasPerformanceProjection } from '@/pages/room/perf'
 import { resolveZIndexState } from '@/pages/room/utils'
 import type { YjsItemType, YjsRank, YjsSharedTypes } from '@/pages/room/types'
 
@@ -57,6 +57,7 @@ export const useYjsDoc = ({ roomId, canvasId }: UseYjsDocProps) => {
           text: yMap.get('text') as string,
           authorName: yMap.get('authorName') as string,
         }))
+        recordCanvasPerformanceProjection('full', items.length)
         setPostits(items)
       })
     }
@@ -79,6 +80,7 @@ export const useYjsDoc = ({ roomId, canvasId }: UseYjsDocProps) => {
           rating: yMap.get('rating') as number | undefined,
           userRatingCount: yMap.get('userRatingCount') as number | undefined,
         }))
+        recordCanvasPerformanceProjection('full', items.length)
         setPlaceCards(items)
       })
     }
@@ -95,6 +97,7 @@ export const useYjsDoc = ({ roomId, canvasId }: UseYjsDocProps) => {
           lineJoin: yMap.get('lineJoin') as 'round' | 'bevel' | 'miter',
           tool: yMap.get('tool') as 'pen',
         }))
+        recordCanvasPerformanceProjection('full', items.length)
         setLines(items)
       })
     }
@@ -111,6 +114,7 @@ export const useYjsDoc = ({ roomId, canvasId }: UseYjsDocProps) => {
           text: yMap.get('text') as string,
           authorName: yMap.get('authorName') as string,
         }))
+        recordCanvasPerformanceProjection('full', items.length)
         setTextBoxes(items)
       })
     }
