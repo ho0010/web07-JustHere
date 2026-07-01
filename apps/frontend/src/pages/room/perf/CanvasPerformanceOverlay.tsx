@@ -82,6 +82,10 @@ export const CanvasPerformanceOverlay = ({ itemCounts }: CanvasPerformanceOverla
     () => `${itemCounts.postits + itemCounts.placeCards + itemCounts.lines + itemCounts.textBoxes}개 / 좌표 ${itemCounts.linePoints}쌍`,
     [itemCounts],
   )
+  const visibilitySummary = useMemo(() => {
+    if (itemCounts.visibleItems == null || itemCounts.renderCandidateItems == null || itemCounts.renderedItems == null) return null
+    return `가시/후보/렌더: ${itemCounts.visibleItems}/${itemCounts.renderCandidateItems}/${itemCounts.renderedItems}`
+  }, [itemCounts.renderCandidateItems, itemCounts.renderedItems, itemCounts.visibleItems])
 
   if (!isCanvasPerformanceEnabled) return null
 
@@ -101,6 +105,7 @@ export const CanvasPerformanceOverlay = ({ itemCounts }: CanvasPerformanceOverla
         </div>
       </div>
       <div>객체: {objectSummary}</div>
+      {visibilitySummary && <div>{visibilitySummary}</div>}
       <div>가상/실제 커서: {cursorCount}</div>
       {snapshot ? (
         <>

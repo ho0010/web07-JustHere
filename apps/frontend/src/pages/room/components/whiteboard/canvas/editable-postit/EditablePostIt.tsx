@@ -57,6 +57,9 @@ export const EditablePostIt = ({
     if (shapeRef) {
       shapeRef(groupRef.current)
     }
+    return () => {
+      if (shapeRef) shapeRef(null)
+    }
   }, [shapeRef])
 
   useEffect(() => {

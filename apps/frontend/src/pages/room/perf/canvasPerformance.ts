@@ -19,6 +19,9 @@ export interface CanvasItemCounts {
   linePoints: number
   textBoxes: number
   cursors: number
+  visibleItems?: number
+  renderCandidateItems?: number
+  renderedItems?: number
 }
 
 interface DurationSummary {
@@ -198,7 +201,7 @@ export const resetCanvasPerformance = () => {
 }
 
 export const exportCanvasPerformanceReport = () => ({
-  schemaVersion: 2,
+  schemaVersion: 3,
   exportedAt: new Date().toISOString(),
   page: window.location.href,
   userAgent: navigator.userAgent,

@@ -1,4 +1,5 @@
 export * from './canvasGeometry'
+export * from './canvasViewport'
 export * from './getImageCrop'
 export * from './canvasItemKey'
 export * from './createSelectedItemsSet'

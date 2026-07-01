@@ -52,6 +52,9 @@ export const PlaceCardItem = ({
     if (shapeRef) {
       shapeRef(groupRef.current)
     }
+    return () => {
+      if (shapeRef) shapeRef(null)
+    }
   }, [shapeRef])
 
   const [image] = useImage(card.image || PLACE_CARD_PLACEHOLDER_IMAGE, 'anonymous')
