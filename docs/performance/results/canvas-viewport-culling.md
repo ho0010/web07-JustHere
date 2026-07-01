@@ -354,3 +354,5 @@ Yjs projection이 크다
 모든 객체가 보이는 pan이 느리다
 → hit graph, LOD, bitmap cache 비교
 ```
+
+전체 객체가 보여 viewport culling이 동작하지 않는 상황의 후속 최적화는 [모든 객체가 보이는 저배율 pan을 bitmap cache로 최적화하기](./canvas-all-visible-pan-bitmap-cache.md)에 이어서 정리했다.

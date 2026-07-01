@@ -9,7 +9,9 @@ export type CanvasDurationMetric =
   | 'projectTextBoxes'
   | 'projectZIndex'
   | 'reactRender'
+  | 'panBitmapCacheCreate'
   | 'mainLayerDraw'
+  | 'mainLayerHitDraw'
   | 'cursorLayerDraw'
 
 export interface CanvasItemCounts {
@@ -56,6 +58,12 @@ export interface CanvasPerformanceSnapshot {
     awarenessReceived: number
     storeCommits: number
   }
+  panPipeline: {
+    stageDragMoves: number
+    bitmapCacheCreates: number
+    bitmapCacheSkips: number
+    bitmapCacheActive: boolean
+  }
   durations: Partial<Record<CanvasDurationMetric, DurationSummary>>
 }
 
@@ -68,6 +76,9 @@ interface WindowState {
   inboundBytes: number
   awarenessReceived: number
   cursorStoreCommits: number
+  stageDragMoves: number
+  bitmapCacheCreates: number
+  bitmapCacheSkips: number
 }
 
 const HISTORY_LIMIT = 300
@@ -82,10 +93,14 @@ const createWindowState = (): WindowState => ({
   inboundBytes: 0,
   awarenessReceived: 0,
   cursorStoreCommits: 0,
+  stageDragMoves: 0,
+  bitmapCacheCreates: 0,
+  bitmapCacheSkips: 0,
 })
 
 let currentWindow = createWindowState()
 let history: CanvasPerformanceSnapshot[] = []
+let panBitmapCacheActive = false
 
 const round = (value: number) => Number(value.toFixed(2))
 
@@ -149,6 +164,27 @@ export const recordCanvasPerformanceCursorStoreCommit = () => {
   currentWindow.cursorStoreCommits += 1
 }
 
+export const recordCanvasPerformanceStagePanMove = () => {
+  if (!isCanvasPerformanceEnabled) return
+  currentWindow.stageDragMoves += 1
+}
+
+export const recordCanvasPerformancePanBitmapCacheCreate = (durationMs: number) => {
+  if (!isCanvasPerformanceEnabled) return
+  currentWindow.bitmapCacheCreates += 1
+  recordCanvasPerformanceDuration('panBitmapCacheCreate', durationMs)
+}
+
+export const recordCanvasPerformancePanBitmapCacheSkip = () => {
+  if (!isCanvasPerformanceEnabled) return
+  currentWindow.bitmapCacheSkips += 1
+}
+
+export const setCanvasPerformancePanBitmapCacheActive = (active: boolean) => {
+  if (!isCanvasPerformanceEnabled) return
+  panBitmapCacheActive = active
+}
+
 export const takeCanvasPerformanceSnapshot = (itemCounts: CanvasItemCounts): CanvasPerformanceSnapshot => {
   const capturedAt = new Date().toISOString()
   const now = performance.now()
@@ -188,6 +224,12 @@ export const takeCanvasPerformanceSnapshot = (itemCounts: CanvasItemCounts): Can
       awarenessReceived: windowState.awarenessReceived,
       storeCommits: windowState.cursorStoreCommits,
     },
+    panPipeline: {
+      stageDragMoves: windowState.stageDragMoves,
+      bitmapCacheCreates: windowState.bitmapCacheCreates,
+      bitmapCacheSkips: windowState.bitmapCacheSkips,
+      bitmapCacheActive: panBitmapCacheActive,
+    },
     durations,
   }
 
@@ -201,7 +243,7 @@ export const resetCanvasPerformance = () => {
 }
 
 export const exportCanvasPerformanceReport = () => ({
-  schemaVersion: 3,
+  schemaVersion: 5,
   exportedAt: new Date().toISOString(),
   page: window.location.href,
   userAgent: navigator.userAgent,
