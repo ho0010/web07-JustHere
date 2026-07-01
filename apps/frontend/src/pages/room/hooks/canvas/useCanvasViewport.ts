@@ -10,6 +10,7 @@ interface CanvasTransform {
 }
 
 interface CanvasViewportState {
+  isReady: boolean
   viewportBounds: BoundingBox
   renderBounds: BoundingBox
 }
@@ -32,6 +33,7 @@ const getInitialViewportState = (initialTransform?: CanvasTransform): CanvasView
   }
 
   return {
+    isReady: false,
     viewportBounds: getCanvasViewportBounds(stageTransform),
     renderBounds: getCanvasViewportBounds(stageTransform, VIEWPORT_OVERSCAN_PX),
   }
@@ -77,7 +79,7 @@ export const useCanvasViewport = ({ stageRef, initialTransform }: UseCanvasViewp
       hasSyncedRef.current = true
       lastScaleRef.current = scale
       renderBoundsRef.current = renderBounds
-      setViewportState({ viewportBounds, renderBounds })
+      setViewportState({ isReady: true, viewportBounds, renderBounds })
     }
 
     const scheduleSync = () => {

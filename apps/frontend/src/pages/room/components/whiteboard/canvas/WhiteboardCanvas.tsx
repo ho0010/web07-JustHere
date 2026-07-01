@@ -281,7 +281,7 @@ export const WhiteboardCanvas = ({
     canvasTransformRef,
     onWheel: handleWheel, // useCanvasMouse의 handleWheel을 전달
   })
-  const { viewportBounds, renderBounds } = useCanvasViewport({ stageRef })
+  const { isReady: isViewportReady, viewportBounds, renderBounds } = useCanvasViewport({ stageRef })
 
   useEffect(() => {
     const transformer = transformerRef.current
@@ -371,10 +371,16 @@ export const WhiteboardCanvas = ({
     [itemBoundsByKey, viewportBounds, zIndexKeys],
   )
   const renderCandidateItemKeys = useMemo(
-    () => collectIntersectingItemKeys(zIndexKeys, itemBoundsByKey, renderBounds, selectedItemsSet),
-    [itemBoundsByKey, renderBounds, selectedItemsSet, zIndexKeys],
+    () =>
+      isViewportReady
+        ? collectIntersectingItemKeys(zIndexKeys, itemBoundsByKey, renderBounds, selectedItemsSet)
+        : new Set(zIndexKeys.filter(key => itemBoundsByKey.has(key))),
+    [isViewportReady, itemBoundsByKey, renderBounds, selectedItemsSet, zIndexKeys],
   )
-  const renderedItemCount = useMemo(() => zIndexKeys.filter(key => itemBoundsByKey.has(key)).length, [itemBoundsByKey, zIndexKeys])
+  const renderedZIndexOrder = useMemo(
+    () => zIndexOrder.filter(({ type, id }) => renderCandidateItemKeys.has(makeKey(type, id))),
+    [renderCandidateItemKeys, zIndexOrder],
+  )
 
   const cursorStyle = useMemo(() => {
     if (pendingPlaceCard) {
@@ -405,9 +411,9 @@ export const WhiteboardCanvas = ({
       textBoxes: textBoxes.length,
       visibleItems: visibleItemKeys.size,
       renderCandidateItems: renderCandidateItemKeys.size,
-      renderedItems: renderedItemCount,
+      renderedItems: renderedZIndexOrder.length,
     }),
-    [lines, placeCards.length, postIts.length, renderCandidateItemKeys.size, renderedItemCount, textBoxes.length, visibleItemKeys.size],
+    [lines, placeCards.length, postIts.length, renderCandidateItemKeys.size, renderedZIndexOrder.length, textBoxes.length, visibleItemKeys.size],
   )
 
   return (
@@ -455,7 +461,7 @@ export const WhiteboardCanvas = ({
         onDragEnd={handleDragEnd}
       >
         <Layer ref={mainLayerRef}>
-          {zIndexOrder.map(({ type, id }) => {
+          {renderedZIndexOrder.map(({ type, id }) => {
             if (type === CANVAS_ITEM_TYPE.LINE) {
               const line = linesMap.get(id)
               if (!line) return null
