@@ -397,5 +397,7 @@ PR: 실시간 커서 업데이트 및 애니메이션 처리 최적화
 5. 라인 update와 전송량이 크면 points 구조와 binary 전송 개선
 
 ```text
-next branch: perf/canvas-render-culling
+next branch: perf/canvas-viewport-culling
 ```
+
+후속 Main Layer 최적화 결과는 [전체 객체를 그리던 캔버스를 viewport 기준으로 줄이기](./canvas-viewport-culling.md)에 이어서 정리했다.
