@@ -122,6 +122,10 @@ export const CanvasPerformanceOverlay = ({ itemCounts }: CanvasPerformanceOverla
           <div>
             Cursor: awareness {snapshot.cursorPipeline.awarenessReceived}/s · store {snapshot.cursorPipeline.storeCommits}/s
           </div>
+          <div>
+            Projection: full {snapshot.projectionPipeline.fullCollectionScans}/s · patch {snapshot.projectionPipeline.incrementalPatches}/s · items{' '}
+            {snapshot.projectionPipeline.projectedItems}/s
+          </div>
           <div>Pan: stage move {snapshot.panPipeline.stageDragMoves}/s</div>
           <div>
             Pan cache: {snapshot.panPipeline.bitmapCacheActive ? 'on' : 'off'} · create {snapshot.durations.panBitmapCacheCreate?.p95Ms ?? 0} ms
