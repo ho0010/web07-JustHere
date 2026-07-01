@@ -3,8 +3,8 @@ import { Stage, Layer, Rect, Group, Line, Transformer } from 'react-konva'
 import type Konva from 'konva'
 import { useParams } from 'react-router-dom'
 import { addSocketBreadcrumb, cn, getOrCreateStoredUser } from '@/shared/utils'
-import { CANVAS_ITEM_TYPE, type PlaceCard, type SelectedItem, type ToolType } from '@/shared/types'
-import { getLineBoundingBox, makeKey, createSelectedItemsSet } from '@/pages/room/utils'
+import { CANVAS_ITEM_TYPE, type BoundingBox, type PlaceCard, type SelectedItem, type ToolType } from '@/shared/types'
+import { collectIntersectingItemKeys, expandBoundingBox, getLineBoundingBox, makeKey, createSelectedItemsSet } from '@/pages/room/utils'
 import { DEFAULT_LINE } from '@/pages/room/constants'
 import { CanvasPerformanceOverlay, isCanvasPerformanceEnabled, recordCanvasPerformanceDuration, type CanvasItemCounts } from '@/pages/room/perf'
 import {
@@ -15,6 +15,7 @@ import {
   useCanvasMouse,
   useYjsSocket,
   useCanvasStageTransform,
+  useCanvasViewport,
 } from '@/pages/room/hooks'
 import { CanvasContextMenu } from './canvas-context-menu'
 import { CursorChatInput } from './cursor-chat-input'
@@ -280,6 +281,7 @@ export const WhiteboardCanvas = ({
     canvasTransformRef,
     onWheel: handleWheel, // useCanvasMouse의 handleWheel을 전달
   })
+  const { viewportBounds, renderBounds } = useCanvasViewport({ stageRef })
 
   useEffect(() => {
     const transformer = transformerRef.current
@@ -329,6 +331,51 @@ export const WhiteboardCanvas = ({
   const placeCardsMap = useMemo(() => new Map(placeCards.map(card => [card.id, card])), [placeCards])
   const textBoxesMap = useMemo(() => new Map(textBoxes.map(textBox => [textBox.id, textBox])), [textBoxes])
 
+  const itemBoundsByKey = useMemo(() => {
+    const bounds = new Map<string, BoundingBox>()
+
+    postIts.forEach(postIt => {
+      bounds.set(makeKey(CANVAS_ITEM_TYPE.POST_IT, postIt.id), {
+        x: postIt.x,
+        y: postIt.y,
+        width: postIt.width,
+        height: postIt.height,
+      })
+    })
+    placeCards.forEach(card => {
+      bounds.set(makeKey(CANVAS_ITEM_TYPE.PLACE_CARD, card.id), {
+        x: card.x,
+        y: card.y,
+        width: card.width,
+        height: card.height,
+      })
+    })
+    textBoxes.forEach(textBox => {
+      bounds.set(makeKey(CANVAS_ITEM_TYPE.TEXT_BOX, textBox.id), {
+        x: textBox.x,
+        y: textBox.y,
+        width: textBox.width,
+        height: textBox.height,
+      })
+    })
+    lines.forEach(line => {
+      bounds.set(makeKey(CANVAS_ITEM_TYPE.LINE, line.id), expandBoundingBox(getLineBoundingBox(line.points), line.strokeWidth / 2))
+    })
+
+    return bounds
+  }, [lines, placeCards, postIts, textBoxes])
+
+  const zIndexKeys = useMemo(() => zIndexOrder.map(({ type, id }) => makeKey(type, id)), [zIndexOrder])
+  const visibleItemKeys = useMemo(
+    () => collectIntersectingItemKeys(zIndexKeys, itemBoundsByKey, viewportBounds),
+    [itemBoundsByKey, viewportBounds, zIndexKeys],
+  )
+  const renderCandidateItemKeys = useMemo(
+    () => collectIntersectingItemKeys(zIndexKeys, itemBoundsByKey, renderBounds, selectedItemsSet),
+    [itemBoundsByKey, renderBounds, selectedItemsSet, zIndexKeys],
+  )
+  const renderedItemCount = useMemo(() => zIndexKeys.filter(key => itemBoundsByKey.has(key)).length, [itemBoundsByKey, zIndexKeys])
+
   const cursorStyle = useMemo(() => {
     if (pendingPlaceCard) {
       return 'cursor-crosshair'
@@ -356,8 +403,11 @@ export const WhiteboardCanvas = ({
       lines: lines.length,
       linePoints: lines.reduce((total, line) => total + line.points.length / 2, 0),
       textBoxes: textBoxes.length,
+      visibleItems: visibleItemKeys.size,
+      renderCandidateItems: renderCandidateItemKeys.size,
+      renderedItems: renderedItemCount,
     }),
-    [lines, placeCards.length, postIts.length, textBoxes.length],
+    [lines, placeCards.length, postIts.length, renderCandidateItemKeys.size, renderedItemCount, textBoxes.length, visibleItemKeys.size],
   )
 
   return (
