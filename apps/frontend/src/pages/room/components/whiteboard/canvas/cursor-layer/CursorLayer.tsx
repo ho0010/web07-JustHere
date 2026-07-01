@@ -1,14 +1,22 @@
-import { memo, useEffect, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef } from 'react'
 import { Layer } from 'react-konva'
 import type Konva from 'konva'
 import { useCursorPresenceStore } from '@/pages/room/stores'
 import { isCanvasPerformanceEnabled, recordCanvasPerformanceDuration } from '@/pages/room/perf'
 import { AnimatedCursor } from './animated-cursor'
+import { CursorAnimationScheduler } from './cursorAnimationScheduler'
 
 export const CursorLayer = memo(() => {
   const layerRef = useRef<Konva.Layer>(null)
   const drawStartedAtRef = useRef(0)
   const cursors = useCursorPresenceStore(state => state.cursors)
+  const animationScheduler = useMemo(() => new CursorAnimationScheduler(), [])
+
+  useEffect(() => {
+    return () => {
+      animationScheduler.clear()
+    }
+  }, [animationScheduler])
 
   useEffect(() => {
     if (!isCanvasPerformanceEnabled) return
@@ -35,7 +43,7 @@ export const CursorLayer = memo(() => {
   return (
     <Layer ref={layerRef}>
       {Array.from(cursors.values()).map(cursor => (
-        <AnimatedCursor key={cursor.socketId} cursor={cursor} />
+        <AnimatedCursor key={cursor.socketId} cursor={cursor} animationScheduler={animationScheduler} />
       ))}
     </Layer>
   )

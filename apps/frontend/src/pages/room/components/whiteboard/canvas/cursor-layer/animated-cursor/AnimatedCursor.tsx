@@ -5,18 +5,16 @@ import Konva from 'konva'
 import { CursorIcon } from '@/shared/assets'
 import type { CursorInfoWithId } from '@/shared/types'
 import { getCursorColor, getParticipantColor, cn } from '@/shared/utils'
+import type { CursorAnimationScheduler } from '../cursorAnimationScheduler'
 
 interface AnimatedCursorProps {
   cursor: CursorInfoWithId
+  animationScheduler: CursorAnimationScheduler
 }
 
-export const AnimatedCursor = React.memo(({ cursor }: AnimatedCursorProps) => {
+export const AnimatedCursor = React.memo(({ cursor, animationScheduler }: AnimatedCursorProps) => {
   const groupRef = useRef<Konva.Group>(null)
-
-  const targetRef = useRef({ x: cursor.x, y: cursor.y })
-  const currentRef = useRef({ x: cursor.x, y: cursor.y })
-
-  const animationRef = useRef<Konva.Animation | null>(null)
+  const initialPositionRef = useRef({ x: cursor.x, y: cursor.y })
 
   const [isChatFading, setIsChatFading] = useState(false)
   const [isChatFaded, setIsChatFaded] = useState(false)
@@ -62,6 +60,7 @@ export const AnimatedCursor = React.memo(({ cursor }: AnimatedCursorProps) => {
     }, 3000)
   }, [startFadeOut])
 
+  /* eslint-disable react-hooks/set-state-in-effect -- 기존 채팅 fade 상태를 외부 cursor 상태와 동기화한다. */
   useEffect(() => {
     if (cursor.chatActive) {
       if (prevChatMessageRef.current !== cursor.chatMessage) {
@@ -72,6 +71,7 @@ export const AnimatedCursor = React.memo(({ cursor }: AnimatedCursorProps) => {
       deactivateFade()
     }
   }, [cursor.chatActive, cursor.chatMessage, resetInactivityTimer, deactivateFade])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     return () => {
@@ -85,47 +85,15 @@ export const AnimatedCursor = React.memo(({ cursor }: AnimatedCursorProps) => {
   }, [])
 
   useEffect(() => {
-    targetRef.current = { x: cursor.x, y: cursor.y }
-  }, [cursor.x, cursor.y])
+    const group = groupRef.current
+    if (!group) return
+
+    return animationScheduler.register(cursor.socketId, group, initialPositionRef.current)
+  }, [animationScheduler, cursor.socketId])
 
   useEffect(() => {
-    if (!groupRef.current) return
-
-    const initialX = cursor.x
-    const initialY = cursor.y
-    currentRef.current = { x: initialX, y: initialY }
-    groupRef.current.x(initialX)
-    groupRef.current.y(initialY)
-
-    const animation = new Konva.Animation(() => {
-      if (!groupRef.current) return
-
-      const current = currentRef.current
-      const target = targetRef.current
-
-      const lerpFactor = 0.2
-
-      current.x += (target.x - current.x) * lerpFactor
-      current.y += (target.y - current.y) * lerpFactor
-
-      const distance = Math.sqrt(Math.pow(target.x - current.x, 2) + Math.pow(target.y - current.y, 2))
-      if (distance < 0.5) {
-        current.x = target.x
-        current.y = target.y
-      }
-
-      groupRef.current.x(current.x)
-      groupRef.current.y(current.y)
-    }, groupRef.current.getLayer())
-
-    animation.start()
-    animationRef.current = animation
-
-    return () => {
-      animation.stop()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    animationScheduler.setTarget(cursor.socketId, { x: cursor.x, y: cursor.y })
+  }, [animationScheduler, cursor.socketId, cursor.x, cursor.y])
 
   return (
     <Group ref={groupRef}>
