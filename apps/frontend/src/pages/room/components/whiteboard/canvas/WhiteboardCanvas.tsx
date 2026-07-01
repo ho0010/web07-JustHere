@@ -4,13 +4,23 @@ import type Konva from 'konva'
 import { useParams } from 'react-router-dom'
 import { addSocketBreadcrumb, cn, getOrCreateStoredUser } from '@/shared/utils'
 import { CANVAS_ITEM_TYPE, type BoundingBox, type PlaceCard, type SelectedItem, type ToolType } from '@/shared/types'
-import { collectIntersectingItemKeys, expandBoundingBox, getLineBoundingBox, makeKey, createSelectedItemsSet } from '@/pages/room/utils'
+import {
+  collectIntersectingItemKeys,
+  expandBoundingBox,
+  getLineBoundingBox,
+  getPanBitmapCacheConfig,
+  makeKey,
+  createSelectedItemsSet,
+} from '@/pages/room/utils'
 import { DEFAULT_LINE } from '@/pages/room/constants'
 import {
   CanvasPerformanceOverlay,
   isCanvasPerformanceEnabled,
   recordCanvasPerformanceDuration,
+  recordCanvasPerformancePanBitmapCacheCreate,
+  recordCanvasPerformancePanBitmapCacheSkip,
   recordCanvasPerformanceStagePanMove,
+  setCanvasPerformancePanBitmapCacheActive,
   type CanvasItemCounts,
 } from '@/pages/room/perf'
 import {
@@ -75,12 +85,14 @@ export const WhiteboardCanvas = ({
 }: WhiteboardCanvasProps) => {
   const stageRef = useRef<Konva.Stage>(null)
   const mainLayerRef = useRef<Konva.Layer>(null)
+  const mainContentGroupRef = useRef<Konva.Group>(null)
+  const panBitmapCacheActiveRef = useRef(false)
   const mainLayerDrawStartedAtRef = useRef(0)
   const transformerRef = useRef<Konva.Transformer>(null)
   const shapeRefs = useRef(new Map<string, Konva.Group>())
 
   const [activeTool, setActiveTool] = useState<ToolType>('cursor')
-
+  const [placeCardCacheVersion, setPlaceCardCacheVersion] = useState(0)
   const [selectedItems, setSelectedItems] = useState<SelectedItem[]>([])
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
@@ -407,6 +419,70 @@ export const WhiteboardCanvas = ({
     [renderCandidateItemKeys, zIndexOrder],
   )
 
+  const clearPanBitmapCache = useCallback(() => {
+    if (!panBitmapCacheActiveRef.current) return
+
+    const group = mainContentGroupRef.current
+    group?.clearCache()
+    group?.listening(true)
+    panBitmapCacheActiveRef.current = false
+    setCanvasPerformancePanBitmapCacheActive(false)
+    setPlaceCardCacheVersion(version => version + 1)
+    mainLayerRef.current?.batchDraw()
+  }, [])
+
+  const handleStageDragStart = useCallback(
+    (e: Konva.KonvaEventObject<DragEvent>) => {
+      if (e.target !== stageRef.current || selectedItems.length > 0 || panBitmapCacheActiveRef.current) return
+
+      const stage = stageRef.current
+      const group = mainContentGroupRef.current
+      const allItemsVisible = visibleItemKeys.size === itemBoundsByKey.size && renderedZIndexOrder.length === itemBoundsByKey.size
+      if (!stage || !group || !allItemsVisible) {
+        recordCanvasPerformancePanBitmapCacheSkip()
+        return
+      }
+
+      const bounds = group.getClientRect({ skipTransform: true })
+      const config = getPanBitmapCacheConfig(bounds, stage.scaleX(), window.devicePixelRatio, renderedZIndexOrder.length)
+      if (!config) {
+        recordCanvasPerformancePanBitmapCacheSkip()
+        return
+      }
+
+      group.listening(false)
+      const startedAt = performance.now()
+      group.cache(config)
+      const durationMs = performance.now() - startedAt
+
+      if (!group.isCached()) {
+        group.listening(true)
+        recordCanvasPerformancePanBitmapCacheSkip()
+        return
+      }
+
+      panBitmapCacheActiveRef.current = true
+      setCanvasPerformancePanBitmapCacheActive(true)
+      recordCanvasPerformancePanBitmapCacheCreate(durationMs)
+    },
+    [itemBoundsByKey.size, renderedZIndexOrder.length, selectedItems.length, visibleItemKeys.size],
+  )
+
+  const handleStageDragEnd = useCallback(
+    (e: Konva.KonvaEventObject<DragEvent>) => {
+      clearPanBitmapCache()
+      handleDragEnd(e)
+    },
+    [clearPanBitmapCache, handleDragEnd],
+  )
+
+  useEffect(
+    () => () => {
+      setCanvasPerformancePanBitmapCacheActive(false)
+    },
+    [],
+  )
+
   const cursorStyle = useMemo(() => {
     if (pendingPlaceCard) {
       return 'cursor-crosshair'
@@ -483,171 +559,175 @@ export const WhiteboardCanvas = ({
         onClick={handleStageClick}
         onTap={handleStageClick}
         onContextMenu={e => e.evt.preventDefault()}
+        onDragStart={handleStageDragStart}
         onDragMove={handleStageDragMove}
-        onDragEnd={handleDragEnd}
+        onDragEnd={handleStageDragEnd}
       >
         <Layer ref={mainLayerRef}>
-          {renderedZIndexOrder.map(({ type, id }) => {
-            if (type === CANVAS_ITEM_TYPE.LINE) {
-              const line = linesMap.get(id)
-              if (!line) return null
+          <Group ref={mainContentGroupRef}>
+            {renderedZIndexOrder.map(({ type, id }) => {
+              if (type === CANVAS_ITEM_TYPE.LINE) {
+                const line = linesMap.get(id)
+                if (!line) return null
 
-              const box = getLineBoundingBox(line.points)
+                const box = getLineBoundingBox(line.points)
 
-              return (
-                <Group
-                  key={makeKey(CANVAS_ITEM_TYPE.LINE, line.id)}
-                  x={box.x}
-                  y={box.y}
-                  width={box.width}
-                  height={box.height}
-                  draggable={canDrag}
-                  ref={node => {
-                    if (node) {
-                      shapeRefs.current.set(makeKey(CANVAS_ITEM_TYPE.LINE, line.id), node)
-                    } else {
-                      shapeRefs.current.delete(makeKey(CANVAS_ITEM_TYPE.LINE, line.id))
-                    }
-                  }}
-                  onMouseDown={e => handleObjectMouseDown(line.id, CANVAS_ITEM_TYPE.LINE, e)}
-                  onClick={e => handleObjectClick(e)}
-                  onContextMenu={e => handleObjectClick(e)}
-                  onDragEnd={e => {
-                    const node = e.target
-                    const dx = node.x() - box.x
-                    const dy = node.y() - box.y
-                    const newPoints = line.points.map((p, i) => (i % 2 === 0 ? p + dx : p + dy))
-                    updateLine(line.id, { points: newPoints })
-                  }}
-                  onTransformEnd={e => {
-                    const node = e.target as Konva.Group
-                    const scaleX = node.scaleX()
-                    const scaleY = node.scaleY()
-
-                    node.scaleX(1)
-                    node.scaleY(1)
-
-                    const relativePoints = line.points.map((p, i) => (i % 2 === 0 ? p - box.x : p - box.y))
-
-                    const newAbsolutePoints: number[] = []
-                    for (let i = 0; i < relativePoints.length; i += 2) {
-                      newAbsolutePoints.push(node.x() + relativePoints[i] * scaleX)
-                      newAbsolutePoints.push(node.y() + relativePoints[i + 1] * scaleY)
-                    }
-                    updateLine(line.id, { points: newAbsolutePoints })
-                  }}
-                >
-                  <Rect width={box.width} height={box.height} fill="transparent" />
-                  <Line
-                    points={line.points.map((p, i) => (i % 2 === 0 ? p - box.x : p - box.y))}
-                    stroke={line.stroke}
-                    strokeWidth={line.strokeWidth}
-                    tension={line.tension}
-                    lineCap={line.lineCap}
-                    lineJoin={line.lineJoin}
-                    globalCompositeOperation={line.tool === 'pen' ? 'source-over' : 'destination-out'}
-                    listening={false}
+                return (
+                  <Group
+                    key={makeKey(CANVAS_ITEM_TYPE.LINE, line.id)}
+                    x={box.x}
+                    y={box.y}
                     width={box.width}
                     height={box.height}
+                    draggable={canDrag}
+                    ref={node => {
+                      if (node) {
+                        shapeRefs.current.set(makeKey(CANVAS_ITEM_TYPE.LINE, line.id), node)
+                      } else {
+                        shapeRefs.current.delete(makeKey(CANVAS_ITEM_TYPE.LINE, line.id))
+                      }
+                    }}
+                    onMouseDown={e => handleObjectMouseDown(line.id, CANVAS_ITEM_TYPE.LINE, e)}
+                    onClick={e => handleObjectClick(e)}
+                    onContextMenu={e => handleObjectClick(e)}
+                    onDragEnd={e => {
+                      const node = e.target
+                      const dx = node.x() - box.x
+                      const dy = node.y() - box.y
+                      const newPoints = line.points.map((p, i) => (i % 2 === 0 ? p + dx : p + dy))
+                      updateLine(line.id, { points: newPoints })
+                    }}
+                    onTransformEnd={e => {
+                      const node = e.target as Konva.Group
+                      const scaleX = node.scaleX()
+                      const scaleY = node.scaleY()
+
+                      node.scaleX(1)
+                      node.scaleY(1)
+
+                      const relativePoints = line.points.map((p, i) => (i % 2 === 0 ? p - box.x : p - box.y))
+
+                      const newAbsolutePoints: number[] = []
+                      for (let i = 0; i < relativePoints.length; i += 2) {
+                        newAbsolutePoints.push(node.x() + relativePoints[i] * scaleX)
+                        newAbsolutePoints.push(node.y() + relativePoints[i + 1] * scaleY)
+                      }
+                      updateLine(line.id, { points: newAbsolutePoints })
+                    }}
+                  >
+                    <Rect width={box.width} height={box.height} fill="transparent" />
+                    <Line
+                      points={line.points.map((p, i) => (i % 2 === 0 ? p - box.x : p - box.y))}
+                      stroke={line.stroke}
+                      strokeWidth={line.strokeWidth}
+                      tension={line.tension}
+                      lineCap={line.lineCap}
+                      lineJoin={line.lineJoin}
+                      globalCompositeOperation={line.tool === 'pen' ? 'source-over' : 'destination-out'}
+                      listening={false}
+                      width={box.width}
+                      height={box.height}
+                    />
+                  </Group>
+                )
+              }
+
+              if (type === CANVAS_ITEM_TYPE.POST_IT) {
+                const postIt = postItsMap.get(id)
+                if (!postIt) return null
+
+                return (
+                  <EditablePostIt
+                    key={makeKey(CANVAS_ITEM_TYPE.POST_IT, postIt.id)}
+                    postIt={postIt}
+                    draggable={canDrag}
+                    onEditStart={stopCapturing}
+                    onEditEnd={stopCapturing}
+                    onDragEnd={(x, y) => {
+                      updatePostIt(postIt.id, { x, y })
+                    }}
+                    onChange={updates => {
+                      updatePostIt(postIt.id, updates)
+                    }}
+                    onMouseDown={e => handleObjectMouseDown(postIt.id, CANVAS_ITEM_TYPE.POST_IT, e)}
+                    onSelect={e => handleObjectClick(e)}
+                    shapeRef={node => {
+                      if (node) {
+                        shapeRefs.current.set(makeKey(CANVAS_ITEM_TYPE.POST_IT, postIt.id), node)
+                      } else {
+                        shapeRefs.current.delete(makeKey(CANVAS_ITEM_TYPE.POST_IT, postIt.id))
+                      }
+                    }}
+                    onTransformEnd={e => handlePostItTransformEnd(postIt, e)}
                   />
-                </Group>
-              )
-            }
+                )
+              }
 
-            if (type === CANVAS_ITEM_TYPE.POST_IT) {
-              const postIt = postItsMap.get(id)
-              if (!postIt) return null
+              if (type === CANVAS_ITEM_TYPE.PLACE_CARD) {
+                const card = placeCardsMap.get(id)
+                if (!card) return null
 
-              return (
-                <EditablePostIt
-                  key={makeKey(CANVAS_ITEM_TYPE.POST_IT, postIt.id)}
-                  postIt={postIt}
-                  draggable={canDrag}
-                  onEditStart={stopCapturing}
-                  onEditEnd={stopCapturing}
-                  onDragEnd={(x, y) => {
-                    updatePostIt(postIt.id, { x, y })
-                  }}
-                  onChange={updates => {
-                    updatePostIt(postIt.id, updates)
-                  }}
-                  onMouseDown={e => handleObjectMouseDown(postIt.id, CANVAS_ITEM_TYPE.POST_IT, e)}
-                  onSelect={e => handleObjectClick(e)}
-                  shapeRef={node => {
-                    if (node) {
-                      shapeRefs.current.set(makeKey(CANVAS_ITEM_TYPE.POST_IT, postIt.id), node)
-                    } else {
-                      shapeRefs.current.delete(makeKey(CANVAS_ITEM_TYPE.POST_IT, postIt.id))
-                    }
-                  }}
-                  onTransformEnd={e => handlePostItTransformEnd(postIt, e)}
-                />
-              )
-            }
+                return (
+                  <PlaceCardItem
+                    key={makeKey(CANVAS_ITEM_TYPE.PLACE_CARD, card.id)}
+                    card={card}
+                    draggable={canDrag}
+                    onDragEnd={(x, y) => {
+                      updatePlaceCard(card.id, { x, y })
+                    }}
+                    onMouseDown={e => handleObjectMouseDown(card.id, CANVAS_ITEM_TYPE.PLACE_CARD, e)}
+                    onClick={e => handleObjectClick(e)}
+                    onShowDetail={() => onShowDetail(card.placeId)}
+                    cacheVersion={placeCardCacheVersion}
+                    onContextMenu={e => handleObjectClick(e)}
+                    shapeRef={node => {
+                      if (node) {
+                        shapeRefs.current.set(makeKey(CANVAS_ITEM_TYPE.PLACE_CARD, card.id), node)
+                      } else {
+                        shapeRefs.current.delete(makeKey(CANVAS_ITEM_TYPE.PLACE_CARD, card.id))
+                      }
+                    }}
+                    onTransformEnd={e => handlePlaceCardTransformEnd(card, e)}
+                  />
+                )
+              }
 
-            if (type === CANVAS_ITEM_TYPE.PLACE_CARD) {
-              const card = placeCardsMap.get(id)
-              if (!card) return null
+              if (type === CANVAS_ITEM_TYPE.TEXT_BOX) {
+                const textBox = textBoxesMap.get(id)
+                if (!textBox) return null
 
-              return (
-                <PlaceCardItem
-                  key={makeKey(CANVAS_ITEM_TYPE.PLACE_CARD, card.id)}
-                  card={card}
-                  draggable={canDrag}
-                  onDragEnd={(x, y) => {
-                    updatePlaceCard(card.id, { x, y })
-                  }}
-                  onMouseDown={e => handleObjectMouseDown(card.id, CANVAS_ITEM_TYPE.PLACE_CARD, e)}
-                  onClick={e => handleObjectClick(e)}
-                  onShowDetail={() => onShowDetail(card.placeId)}
-                  onContextMenu={e => handleObjectClick(e)}
-                  shapeRef={node => {
-                    if (node) {
-                      shapeRefs.current.set(makeKey(CANVAS_ITEM_TYPE.PLACE_CARD, card.id), node)
-                    } else {
-                      shapeRefs.current.delete(makeKey(CANVAS_ITEM_TYPE.PLACE_CARD, card.id))
-                    }
-                  }}
-                  onTransformEnd={e => handlePlaceCardTransformEnd(card, e)}
-                />
-              )
-            }
+                const isSelected = selectedItemsSet.has(makeKey(CANVAS_ITEM_TYPE.TEXT_BOX, textBox.id))
+                return (
+                  <EditableTextBox
+                    key={makeKey(CANVAS_ITEM_TYPE.TEXT_BOX, textBox.id)}
+                    textBox={textBox}
+                    draggable={canDrag}
+                    isSelected={isSelected}
+                    onEditStart={stopCapturing}
+                    onEditEnd={stopCapturing}
+                    onDragEnd={(x, y) => {
+                      updateTextBox(textBox.id, { x, y })
+                    }}
+                    onChange={updates => {
+                      updateTextBox(textBox.id, updates)
+                    }}
+                    onMouseDown={e => handleObjectMouseDown(textBox.id, CANVAS_ITEM_TYPE.TEXT_BOX, e)}
+                    onSelect={e => handleObjectClick(e)}
+                    shapeRef={node => {
+                      if (node) {
+                        shapeRefs.current.set(makeKey(CANVAS_ITEM_TYPE.TEXT_BOX, textBox.id), node)
+                      } else {
+                        shapeRefs.current.delete(makeKey(CANVAS_ITEM_TYPE.TEXT_BOX, textBox.id))
+                      }
+                    }}
+                    onTransformEnd={e => handleTextBoxTransformEnd(textBox, e)}
+                  />
+                )
+              }
 
-            if (type === CANVAS_ITEM_TYPE.TEXT_BOX) {
-              const textBox = textBoxesMap.get(id)
-              if (!textBox) return null
-
-              const isSelected = selectedItemsSet.has(makeKey(CANVAS_ITEM_TYPE.TEXT_BOX, textBox.id))
-              return (
-                <EditableTextBox
-                  key={makeKey(CANVAS_ITEM_TYPE.TEXT_BOX, textBox.id)}
-                  textBox={textBox}
-                  draggable={canDrag}
-                  isSelected={isSelected}
-                  onEditStart={stopCapturing}
-                  onEditEnd={stopCapturing}
-                  onDragEnd={(x, y) => {
-                    updateTextBox(textBox.id, { x, y })
-                  }}
-                  onChange={updates => {
-                    updateTextBox(textBox.id, updates)
-                  }}
-                  onMouseDown={e => handleObjectMouseDown(textBox.id, CANVAS_ITEM_TYPE.TEXT_BOX, e)}
-                  onSelect={e => handleObjectClick(e)}
-                  shapeRef={node => {
-                    if (node) {
-                      shapeRefs.current.set(makeKey(CANVAS_ITEM_TYPE.TEXT_BOX, textBox.id), node)
-                    } else {
-                      shapeRefs.current.delete(makeKey(CANVAS_ITEM_TYPE.TEXT_BOX, textBox.id))
-                    }
-                  }}
-                  onTransformEnd={e => handleTextBoxTransformEnd(textBox, e)}
-                />
-              )
-            }
-
-            return null
-          })}
+              return null
+            })}
+          </Group>
 
           {/* 현재 드로잉 중인 라인 */}
           <CurrentDrawingLine ref={currentDrawingLineRef} />

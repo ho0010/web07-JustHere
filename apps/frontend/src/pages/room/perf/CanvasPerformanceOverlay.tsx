@@ -123,6 +123,9 @@ export const CanvasPerformanceOverlay = ({ itemCounts }: CanvasPerformanceOverla
             Cursor: awareness {snapshot.cursorPipeline.awarenessReceived}/s · store {snapshot.cursorPipeline.storeCommits}/s
           </div>
           <div>Pan: stage move {snapshot.panPipeline.stageDragMoves}/s</div>
+          <div>
+            Pan cache: {snapshot.panPipeline.bitmapCacheActive ? 'on' : 'off'} · create {snapshot.durations.panBitmapCacheCreate?.p95Ms ?? 0} ms
+          </div>
           <div>Yjs apply p95: {snapshot.durations.yjsUpdateApply?.p95Ms ?? 0} ms</div>
           <div>
             상태 투영 p95:{' '}

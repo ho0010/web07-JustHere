@@ -24,6 +24,7 @@ interface PlaceCardItemProps {
   shapeRef?: (node: Konva.Group | null) => void
   onTransformEnd?: (e: Konva.KonvaEventObject<Event>) => void
   onShowDetail?: (placeId: string) => void
+  cacheVersion?: number
 }
 
 export const PlaceCardItem = ({
@@ -36,6 +37,7 @@ export const PlaceCardItem = ({
   shapeRef,
   onTransformEnd,
   onShowDetail,
+  cacheVersion,
 }: PlaceCardItemProps) => {
   const groupRef = useRef<Konva.Group>(null)
 
@@ -75,7 +77,7 @@ export const PlaceCardItem = ({
     return () => {
       group.clearCache()
     }
-  }, [image, cardWidth, cardHeight, scale, card.name, card.rating, card.category, card.address])
+  }, [image, cardWidth, cardHeight, scale, card.name, card.rating, card.category, card.address, cacheVersion])
 
   const imageWidth = textWidth + scaledPadding * 2
   const imageHeight = scaledImageHeight
