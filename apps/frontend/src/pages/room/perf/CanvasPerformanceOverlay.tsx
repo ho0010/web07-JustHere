@@ -122,6 +122,7 @@ export const CanvasPerformanceOverlay = ({ itemCounts }: CanvasPerformanceOverla
           <div>
             Cursor: awareness {snapshot.cursorPipeline.awarenessReceived}/s · store {snapshot.cursorPipeline.storeCommits}/s
           </div>
+          <div>Pan: stage move {snapshot.panPipeline.stageDragMoves}/s</div>
           <div>Yjs apply p95: {snapshot.durations.yjsUpdateApply?.p95Ms ?? 0} ms</div>
           <div>
             상태 투영 p95:{' '}
@@ -136,8 +137,9 @@ export const CanvasPerformanceOverlay = ({ itemCounts }: CanvasPerformanceOverla
           </div>
           <div>React render p95: {reactRenderP95 == null ? 'N/A' : `${reactRenderP95} ms`}</div>
           <div>
-            Konva draw p95: main {snapshot.durations.mainLayerDraw?.p95Ms ?? 0} ms · cursor {snapshot.durations.cursorLayerDraw?.p95Ms ?? 0} ms
+            Konva draw p95: scene {snapshot.durations.mainLayerDraw?.p95Ms ?? 0} ms · hit {snapshot.durations.mainLayerHitDraw?.p95Ms ?? 0} ms
           </div>
+          <div>Cursor draw p95: {snapshot.durations.cursorLayerDraw?.p95Ms ?? 0} ms</div>
         </>
       ) : (
         <div className="text-slate-400">첫 1초 표본을 수집하는 중...</div>

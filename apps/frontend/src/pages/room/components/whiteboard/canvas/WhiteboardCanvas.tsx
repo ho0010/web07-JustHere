@@ -6,7 +6,13 @@ import { addSocketBreadcrumb, cn, getOrCreateStoredUser } from '@/shared/utils'
 import { CANVAS_ITEM_TYPE, type BoundingBox, type PlaceCard, type SelectedItem, type ToolType } from '@/shared/types'
 import { collectIntersectingItemKeys, expandBoundingBox, getLineBoundingBox, makeKey, createSelectedItemsSet } from '@/pages/room/utils'
 import { DEFAULT_LINE } from '@/pages/room/constants'
-import { CanvasPerformanceOverlay, isCanvasPerformanceEnabled, recordCanvasPerformanceDuration, type CanvasItemCounts } from '@/pages/room/perf'
+import {
+  CanvasPerformanceOverlay,
+  isCanvasPerformanceEnabled,
+  recordCanvasPerformanceDuration,
+  recordCanvasPerformanceStagePanMove,
+  type CanvasItemCounts,
+} from '@/pages/room/perf'
 import {
   useCanvasTransform,
   useCursorChat,
@@ -317,12 +323,31 @@ export const WhiteboardCanvas = ({
       recordCanvasPerformanceDuration('mainLayerDraw', performance.now() - mainLayerDrawStartedAtRef.current)
       mainLayerDrawStartedAtRef.current = 0
     }
+    const originalDrawHit = layer.drawHit
+    const measuredDrawHit: Konva.Layer['drawHit'] = (...args: Parameters<Konva.Layer['drawHit']>) => {
+      const startedAt = performance.now()
+      try {
+        return originalDrawHit.apply(layer, args)
+      } finally {
+        recordCanvasPerformanceDuration('mainLayerHitDraw', performance.now() - startedAt)
+      }
+    }
 
     layer.on('beforeDraw.canvasPerformance', handleBeforeDraw)
     layer.on('draw.canvasPerformance', handleDraw)
+    layer.drawHit = measuredDrawHit
     return () => {
       layer.off('beforeDraw.canvasPerformance', handleBeforeDraw)
       layer.off('draw.canvasPerformance', handleDraw)
+      if (layer.drawHit === measuredDrawHit) {
+        layer.drawHit = originalDrawHit
+      }
+    }
+  }, [])
+
+  const handleStageDragMove = useCallback((e: Konva.KonvaEventObject<DragEvent>) => {
+    if (e.target === stageRef.current) {
+      recordCanvasPerformanceStagePanMove()
     }
   }, [])
 
@@ -458,6 +483,7 @@ export const WhiteboardCanvas = ({
         onClick={handleStageClick}
         onTap={handleStageClick}
         onContextMenu={e => e.evt.preventDefault()}
+        onDragMove={handleStageDragMove}
         onDragEnd={handleDragEnd}
       >
         <Layer ref={mainLayerRef}>

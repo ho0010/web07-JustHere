@@ -10,6 +10,7 @@ export type CanvasDurationMetric =
   | 'projectZIndex'
   | 'reactRender'
   | 'mainLayerDraw'
+  | 'mainLayerHitDraw'
   | 'cursorLayerDraw'
 
 export interface CanvasItemCounts {
@@ -56,6 +57,9 @@ export interface CanvasPerformanceSnapshot {
     awarenessReceived: number
     storeCommits: number
   }
+  panPipeline: {
+    stageDragMoves: number
+  }
   durations: Partial<Record<CanvasDurationMetric, DurationSummary>>
 }
 
@@ -68,6 +72,7 @@ interface WindowState {
   inboundBytes: number
   awarenessReceived: number
   cursorStoreCommits: number
+  stageDragMoves: number
 }
 
 const HISTORY_LIMIT = 300
@@ -82,6 +87,7 @@ const createWindowState = (): WindowState => ({
   inboundBytes: 0,
   awarenessReceived: 0,
   cursorStoreCommits: 0,
+  stageDragMoves: 0,
 })
 
 let currentWindow = createWindowState()
@@ -149,6 +155,11 @@ export const recordCanvasPerformanceCursorStoreCommit = () => {
   currentWindow.cursorStoreCommits += 1
 }
 
+export const recordCanvasPerformanceStagePanMove = () => {
+  if (!isCanvasPerformanceEnabled) return
+  currentWindow.stageDragMoves += 1
+}
+
 export const takeCanvasPerformanceSnapshot = (itemCounts: CanvasItemCounts): CanvasPerformanceSnapshot => {
   const capturedAt = new Date().toISOString()
   const now = performance.now()
@@ -188,6 +199,9 @@ export const takeCanvasPerformanceSnapshot = (itemCounts: CanvasItemCounts): Can
       awarenessReceived: windowState.awarenessReceived,
       storeCommits: windowState.cursorStoreCommits,
     },
+    panPipeline: {
+      stageDragMoves: windowState.stageDragMoves,
+    },
     durations,
   }
 
@@ -201,7 +215,7 @@ export const resetCanvasPerformance = () => {
 }
 
 export const exportCanvasPerformanceReport = () => ({
-  schemaVersion: 3,
+  schemaVersion: 4,
   exportedAt: new Date().toISOString(),
   page: window.location.href,
   userAgent: navigator.userAgent,

@@ -19,6 +19,8 @@ describe('canvasPerformance', () => {
     performance.recordCanvasPerformanceAwarenessReceived()
     performance.recordCanvasPerformanceAwarenessReceived()
     performance.recordCanvasPerformanceCursorStoreCommit()
+    performance.recordCanvasPerformanceStagePanMove()
+    performance.recordCanvasPerformanceStagePanMove()
     performance.recordCanvasPerformanceDuration('cursorLayerDraw', 4)
     performance.recordCanvasPerformanceDuration('cursorLayerDraw', 8)
 
@@ -34,6 +36,7 @@ describe('canvasPerformance', () => {
     expect(snapshot.frames.slowFrameThresholdMs).toBe(20)
     expect(snapshot.frames.slowFrameRatio).toBe(0.67)
     expect(snapshot.cursorPipeline).toEqual({ awarenessReceived: 2, storeCommits: 1 })
+    expect(snapshot.panPipeline).toEqual({ stageDragMoves: 2 })
     expect(snapshot.durations.cursorLayerDraw).toMatchObject({ count: 2, averageMs: 6, p95Ms: 8 })
   })
 })
