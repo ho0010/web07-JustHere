@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react'
 import type { Socket } from 'socket.io-client'
+import { encodeStateVector } from 'yjs'
 import type { AwarenessState, CanvasAttachPayload, CanvasDetachPayload, YjsAwarenessPayload, YjsUpdatePayload } from '@/shared/types'
 import { throttle, type ThrottledFunction } from '@/shared/utils'
 import { useSocketClient } from '@/shared/hooks'
@@ -19,6 +20,7 @@ interface UseYjsSocketOptions {
 export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions) {
   const canvasIdRef = useRef(canvasId)
   const socketRef = useRef<Socket | null>(null)
+  const syncReadyRef = useRef(false)
 
   const applyAwareness = useCursorPresenceStore(state => state.applyAwareness)
   const clearCursors = useCursorPresenceStore(state => state.clearCursors)
@@ -43,6 +45,9 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
     [roomId, canvasId],
   )
   const { trackHighFreq, trackHighFreqRef } = useYjsTelemetry({ roomId, canvasId })
+  const markSyncReady = useCallback(() => {
+    syncReadyRef.current = true
+  }, [])
 
   const cursorPositionRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
   const cursorChatRef = useRef<{ chatActive: boolean; chatMessage: string }>({ chatActive: false, chatMessage: '' })
@@ -96,6 +101,7 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
     docRef,
     applyAwareness,
     trackHighFreq,
+    onSynced: markSyncReady,
   })
 
   const updateCursorThrottledRef = useRef<ThrottledFunction<[number, number]> | null>(null)
@@ -108,25 +114,36 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
     if (!doc) return
 
     socketRef.current = socket
+    syncReadyRef.current = false
 
     const handleConnect = () => {
-      const attachPayload: CanvasAttachPayload = { roomId, canvasId }
+      syncReadyRef.current = false
+      const attachPayload: CanvasAttachPayload = {
+        roomId,
+        canvasId,
+        clientStateVector: Array.from(encodeStateVector(doc)),
+      }
       socket.emit(CANVAS_EVENTS.attach, attachPayload)
       addSocketBreadcrumb(CANVAS_EVENTS.attach, { roomId, canvasId })
     }
 
+    const handleDisconnect = () => {
+      syncReadyRef.current = false
+    }
+
     const handleUpdate = (update: Uint8Array, origin: unknown) => {
-      if (origin !== socket) {
-        trackHighFreq(YJS_EVENTS.updateSend, update.byteLength)
-        const updatePayload: YjsUpdatePayload = {
-          canvasId,
-          update: Array.from(update),
-        }
-        socket.emit(YJS_EVENTS.update, updatePayload)
+      if (origin === socket || !socket.connected || !syncReadyRef.current) return
+
+      trackHighFreq(YJS_EVENTS.updateSend, update.byteLength)
+      const updatePayload: YjsUpdatePayload = {
+        canvasId,
+        update: Array.from(update),
       }
+      socket.emit(YJS_EVENTS.update, updatePayload)
     }
 
     socket.on('connect', handleConnect)
+    socket.on('disconnect', handleDisconnect)
     doc.on('update', handleUpdate)
 
     if (socket.connected) {
@@ -142,6 +159,8 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
 
       doc.off('update', handleUpdate)
       socket.off('connect', handleConnect)
+      socket.off('disconnect', handleDisconnect)
+      syncReadyRef.current = false
       if (socketRef.current === socket) {
         socketRef.current = null
       }

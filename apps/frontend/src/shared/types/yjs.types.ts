@@ -3,6 +3,7 @@
 export interface CanvasAttachPayload {
   roomId: string
   canvasId: string
+  clientStateVector: number[]
 }
 
 export interface CanvasDetachPayload {
@@ -36,6 +37,7 @@ export interface YjsAwarenessPayload {
 export interface CanvasAttachedPayload {
   docKey: string
   update?: number[]
+  serverStateVector?: number[]
 }
 
 export interface YjsUpdateBroadcast {
