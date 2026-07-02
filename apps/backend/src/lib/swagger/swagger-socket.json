@@ -256,7 +256,7 @@
       "event": "canvas:attach",
       "namespace": "/canvas",
       "tags": ["Socket.IO Events - Canvas"],
-      "description": "캔버스에 참여하여 Yjs 문서를 초기화합니다.\n\n**사용법:**\n```javascript\nsocket.emit('canvas:attach', {\n  roomId: 'room-uuid',\n  canvasId: 'cat-uuid'\n})\n```\n\n**네임스페이스:** /canvas\n**응답 이벤트:** canvas:attached (본인에게만)",
+      "description": "캔버스에 참여하여 Yjs 문서를 동기화합니다. 클라이언트 state vector가 있으면 서버에만 존재하는 diff를 반환하고, 없으면 전체 문서를 반환합니다.\n\n**사용법:**\n```javascript\nsocket.emit('canvas:attach', {\n  roomId: 'room-uuid',\n  canvasId: 'cat-uuid',\n  clientStateVector: Array.from(Y.encodeStateVector(doc))\n})\n```\n\n**네임스페이스:** /canvas\n**응답 이벤트:** canvas:attached (본인에게만)",
       "request": {
         "type": "object",
         "required": ["roomId", "canvasId"],
@@ -270,13 +270,19 @@
             "type": "string",
             "description": "캔버스(카테고리) UUID",
             "example": "cat-550e8400-e29b-41d4-a716-446655440000"
+          },
+          "clientStateVector": {
+            "type": "array",
+            "description": "클라이언트가 보유한 Yjs state vector. 생략하면 서버 전체 상태를 반환합니다.",
+            "items": { "type": "number" },
+            "nullable": true
           }
         }
       },
       "response": {
         "type": "object",
         "description": "초기 동기화 데이터 (canvas:attached 이벤트)",
-        "required": ["docKey"],
+        "required": ["docKey", "serverStateVector"],
         "properties": {
           "docKey": {
             "type": "string",
@@ -285,9 +291,14 @@
           },
           "update": {
             "type": "array",
-            "description": "초기 Yjs 상태 (Uint8Array를 number[]로 직렬화)",
+            "description": "클라이언트에 없는 서버 Yjs update. 이미 동기화된 경우 생략됩니다.",
             "items": { "type": "number" },
             "nullable": true
+          },
+          "serverStateVector": {
+            "type": "array",
+            "description": "응답 시점의 서버 Yjs state vector. 클라이언트는 이를 기준으로 서버에 없는 로컬 diff를 계산합니다.",
+            "items": { "type": "number" }
           }
         }
       }

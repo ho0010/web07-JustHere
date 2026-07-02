@@ -1,6 +1,7 @@
 export class CanvasAttachPayload {
   roomId!: string
   canvasId!: string
+  clientStateVector?: number[]
 }
 
 export class CanvasDetachPayload {

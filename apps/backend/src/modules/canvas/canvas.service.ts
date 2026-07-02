@@ -2,7 +2,7 @@ import { CustomException } from '@/lib/exceptions/custom.exception'
 import { ErrorType } from '@/lib/types/response.type'
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common'
 import * as Y from 'yjs'
-import { encodeStateAsUpdate, applyUpdate } from 'yjs'
+import { encodeStateAsUpdate, encodeStateVector, applyUpdate } from 'yjs'
 import { CanvasRepository } from './canvas.repository'
 
 interface YjsDocument {
@@ -118,7 +118,7 @@ export class CanvasService implements OnModuleInit, OnModuleDestroy {
    * 2. 클라이언트 접속 등록
    * 3. 초기 동기화 데이터(StateVector) 반환
    */
-  async initializeConnection(roomId: string, categoryId: string, socketId: string) {
+  async initializeConnection(roomId: string, categoryId: string, socketId: string, clientStateVector?: Uint8Array) {
     try {
       // 1. 문서 확보
       const doc = await this.getOrCreateDocument(roomId, categoryId)
@@ -126,18 +126,31 @@ export class CanvasService implements OnModuleInit, OnModuleDestroy {
       // 2. 접속자 등록
       this.connectClient(categoryId, socketId)
 
-      // 3. 응답 데이터 생성
-      const stateVector = encodeStateAsUpdate(doc)
+      // 3. 클라이언트가 아직 갖지 못한 서버 변경만 계산
+      let update: Uint8Array
+      try {
+        update = clientStateVector ? encodeStateAsUpdate(doc, clientStateVector) : encodeStateAsUpdate(doc)
+      } catch {
+        throw new CustomException(ErrorType.BadRequest, '잘못된 Yjs state vector입니다.')
+      }
+      const serverStateVector = encodeStateVector(doc)
       const docKey = `${roomId}-${categoryId}`
 
       return {
         docKey,
-        update: stateVector ? Array.from(stateVector) : undefined,
+        update: this.hasUpdateContent(update) ? Array.from(update) : undefined,
+        serverStateVector: Array.from(serverStateVector),
       }
     } catch (error) {
       this.logger.error(`Failed to initialize connection for ${categoryId}`, error)
+      if (error instanceof CustomException && error.type === ErrorType.BadRequest) throw error
       throw new CustomException(ErrorType.InternalServerError, '캔버스 연결 초기화에 실패했습니다.')
     }
+  }
+
+  private hasUpdateContent(update: Uint8Array): boolean {
+    const decoded = Y.decodeUpdate(update)
+    return decoded.structs.length > 0 || decoded.ds.clients.size > 0
   }
 
   /**

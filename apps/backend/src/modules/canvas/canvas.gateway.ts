@@ -49,15 +49,21 @@ export class CanvasGateway implements OnGatewayInit, OnGatewayDisconnect {
    */
   @SubscribeMessage('canvas:attach')
   async onCanvasAttach(@ConnectedSocket() client: Socket, @MessageBody() payload: CanvasAttachPayload) {
-    const { roomId, canvasId } = payload
+    const { roomId, canvasId, clientStateVector } = payload
+    const canvasRoom = `canvas:${canvasId}`
 
-    // 서비스 초기화
-    const response = await this.canvasService.initializeConnection(roomId, canvasId, client.id)
+    // Snapshot 계산과 room join 사이에 발생한 update를 놓치지 않도록 먼저 room에 참여한다.
+    await client.join(canvasRoom)
 
-    // Socket.io room에 참여
-    await client.join(`canvas:${canvasId}`)
+    try {
+      const decodedClientStateVector = clientStateVector && clientStateVector.length > 0 ? new Uint8Array(clientStateVector) : undefined
+      const response = await this.canvasService.initializeConnection(roomId, canvasId, client.id, decodedClientStateVector)
 
-    client.emit('canvas:attached', response)
+      client.emit('canvas:attached', response)
+    } catch (error) {
+      await client.leave(canvasRoom)
+      throw error
+    }
   }
 
   /**

@@ -5,6 +5,7 @@ import type { CanvasAttachedPayload, YjsAwarenessBroadcast, YjsUpdateBroadcast }
 import { addSocketBreadcrumb } from '@/shared/utils'
 import { CANVAS_EVENTS, YJS_EVENTS } from '@/pages/room/constants'
 import { measureCanvasPerformance, recordCanvasPerformanceAwarenessReceived, recordCanvasPerformanceInboundUpdate } from '@/pages/room/perf'
+import { createMissingYjsUpdate } from './yjsSync'
 
 interface UseYjsSocketEventsOptions {
   resolveSocket: () => Socket | null
@@ -14,6 +15,7 @@ interface UseYjsSocketEventsOptions {
   docRef: { current: YDoc | null }
   applyAwareness: (payload: YjsAwarenessBroadcast) => void
   trackHighFreq: (key: string, bytes?: number) => void
+  onSynced?: () => void
 }
 
 export const useYjsSocketEvents = ({
@@ -24,6 +26,7 @@ export const useYjsSocketEvents = ({
   docRef,
   applyAwareness,
   trackHighFreq,
+  onSynced,
 }: UseYjsSocketEventsOptions) => {
   useEffect(() => {
     if (!enabled) return
@@ -32,12 +35,25 @@ export const useYjsSocketEvents = ({
     const doc = docRef.current
     if (!socket || !doc) return
 
-    const handleCanvasAttached = ({ update }: CanvasAttachedPayload) => {
-      if (!update) return
+    const handleCanvasAttached = ({ update, serverStateVector }: CanvasAttachedPayload) => {
+      const updateArray = update ? new Uint8Array(update) : null
+      if (updateArray && updateArray.byteLength > 0) {
+        measureCanvasPerformance('yjsInitialApply', () => YapplyUpdate(doc, updateArray, socket))
+      }
 
-      const updateArray = new Uint8Array(update)
-      measureCanvasPerformance('yjsInitialApply', () => YapplyUpdate(doc, updateArray, socket))
-      addSocketBreadcrumb(CANVAS_EVENTS.attached, { roomId, canvasId, bytes: updateArray.byteLength })
+      const clientUpdate = serverStateVector ? createMissingYjsUpdate(doc, new Uint8Array(serverStateVector)) : null
+      if (clientUpdate) {
+        trackHighFreq(YJS_EVENTS.updateSend, clientUpdate.byteLength)
+        socket.emit(YJS_EVENTS.update, { canvasId, update: Array.from(clientUpdate) })
+      }
+
+      addSocketBreadcrumb(CANVAS_EVENTS.attached, {
+        roomId,
+        canvasId,
+        receivedBytes: updateArray?.byteLength ?? 0,
+        returnedBytes: clientUpdate?.byteLength ?? 0,
+      })
+      onSynced?.()
     }
 
     const handleCanvasDetached = () => {
@@ -69,5 +85,5 @@ export const useYjsSocketEvents = ({
       socket.off(YJS_EVENTS.update, handleYjsUpdate)
       socket.off(YJS_EVENTS.awareness, handleAwareness)
     }
-  }, [resolveSocket, enabled, roomId, canvasId, docRef, applyAwareness, trackHighFreq])
+  }, [resolveSocket, enabled, roomId, canvasId, docRef, applyAwareness, trackHighFreq, onSynced])
 }
