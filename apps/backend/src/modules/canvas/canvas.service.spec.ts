@@ -61,7 +61,8 @@ describe('YjsService', () => {
       const result = await service.initializeConnection(roomId, categoryId, socketId)
 
       expect(result.docKey).toBe(`${roomId}-${categoryId}`)
-      expect(result.update).toBeDefined()
+      expect(result.update).toBeUndefined()
+      expect(result.serverStateVector).toEqual(Array.from(Y.encodeStateVector(new Y.Doc())))
       expect(mockRepository.getMergedUpdate).toHaveBeenCalledWith(categoryId)
     })
 
@@ -102,6 +103,131 @@ describe('YjsService', () => {
       await expect(service.initializeConnection(roomId, categoryId, socketId)).rejects.toThrow(
         new CustomException(ErrorType.InternalServerError, '캔버스 연결 초기화에 실패했습니다.'),
       )
+    })
+
+    it('손상된 client state vector는 BadRequest로 거절해야 한다', async () => {
+      mockRepository.getMergedUpdate.mockResolvedValue(new Uint8Array())
+
+      await expect(service.initializeConnection(roomId, categoryId, socketId, new Uint8Array([255]))).rejects.toThrow(
+        new CustomException(ErrorType.BadRequest, '잘못된 Yjs state vector입니다.'),
+      )
+    })
+
+    it('클라이언트 state vector를 기준으로 서버의 누락된 변경만 반환해야 한다', async () => {
+      const serverDoc = new Y.Doc()
+      const clientDoc = new Y.Doc()
+      serverDoc.getMap('fixture').set('shared', true)
+      Y.applyUpdate(clientDoc, Y.encodeStateAsUpdate(serverDoc))
+      serverDoc.getMap('fixture').set('server-only', true)
+
+      const fullServerUpdate = Y.encodeStateAsUpdate(serverDoc)
+      mockRepository.getMergedUpdate.mockResolvedValue(fullServerUpdate)
+
+      const result = await service.initializeConnection(roomId, categoryId, socketId, Y.encodeStateVector(clientDoc))
+
+      expect(result.update).toBeDefined()
+      expect(result.update!.length).toBeLessThan(fullServerUpdate.byteLength)
+      Y.applyUpdate(clientDoc, new Uint8Array(result.update!))
+      expect(clientDoc.getMap('fixture').toJSON()).toEqual(serverDoc.getMap('fixture').toJSON())
+
+      clientDoc.destroy()
+      serverDoc.destroy()
+    })
+
+    it('새 struct가 없는 서버 삭제 변경도 누락 update에 포함해야 한다', async () => {
+      const serverDoc = new Y.Doc()
+      const clientDoc = new Y.Doc()
+      serverDoc.getArray('fixture').push(['keep', 'delete'])
+      Y.applyUpdate(clientDoc, Y.encodeStateAsUpdate(serverDoc))
+      serverDoc.getArray('fixture').delete(1, 1)
+      mockRepository.getMergedUpdate.mockResolvedValue(Y.encodeStateAsUpdate(serverDoc))
+
+      const result = await service.initializeConnection(roomId, categoryId, socketId, Y.encodeStateVector(clientDoc))
+
+      expect(result.update).toBeDefined()
+      Y.applyUpdate(clientDoc, new Uint8Array(result.update!))
+      expect(clientDoc.getArray('fixture').toArray()).toEqual(['keep'])
+
+      clientDoc.destroy()
+      serverDoc.destroy()
+    })
+
+    it('서버와 오프라인 클라이언트가 각각 수정해도 재접속 후 양방향으로 수렴해야 한다', async () => {
+      mockRepository.getMergedUpdate.mockResolvedValue(new Uint8Array())
+
+      const clientDoc = new Y.Doc()
+      const initial = await service.initializeConnection(roomId, categoryId, socketId, Y.encodeStateVector(clientDoc))
+      if (initial.update) {
+        Y.applyUpdate(clientDoc, new Uint8Array(initial.update))
+      }
+
+      clientDoc.getMap('fixture').set('client-only', 'offline edit')
+
+      const remoteDoc = new Y.Doc()
+      remoteDoc.getMap('fixture').set('server-only', 'online edit')
+      service.processUpdate(categoryId, Y.encodeStateAsUpdate(remoteDoc))
+
+      const reconnected = await service.initializeConnection(roomId, categoryId, socketId, Y.encodeStateVector(clientDoc))
+      if (reconnected.update) {
+        Y.applyUpdate(clientDoc, new Uint8Array(reconnected.update))
+      }
+
+      const clientOnlyUpdate = Y.encodeStateAsUpdate(clientDoc, new Uint8Array(reconnected.serverStateVector))
+      service.processUpdate(categoryId, clientOnlyUpdate)
+
+      const verificationDoc = new Y.Doc()
+      const verification = await service.initializeConnection(roomId, categoryId, 'verification-socket', Y.encodeStateVector(verificationDoc))
+      if (verification.update) {
+        Y.applyUpdate(verificationDoc, new Uint8Array(verification.update))
+      }
+
+      expect(verificationDoc.getMap('fixture').toJSON()).toEqual({
+        'client-only': 'offline edit',
+        'server-only': 'online edit',
+      })
+
+      verificationDoc.destroy()
+      remoteDoc.destroy()
+      clientDoc.destroy()
+    })
+
+    it('같은 key의 동시 수정과 중복 update가 있어도 재접속 후 같은 상태로 수렴해야 한다', async () => {
+      const baseDoc = new Y.Doc()
+      baseDoc.getMap('fixture').set('conflict', 'base')
+      const baseUpdate = Y.encodeStateAsUpdate(baseDoc)
+      mockRepository.getMergedUpdate.mockResolvedValue(baseUpdate)
+
+      const clientDoc = new Y.Doc()
+      const initial = await service.initializeConnection(roomId, categoryId, socketId, Y.encodeStateVector(clientDoc))
+      Y.applyUpdate(clientDoc, new Uint8Array(initial.update!))
+
+      clientDoc.getMap('fixture').set('conflict', 'offline client')
+
+      const onlineDoc = new Y.Doc()
+      Y.applyUpdate(onlineDoc, baseUpdate)
+      onlineDoc.getMap('fixture').set('conflict', 'online client')
+      const onlineUpdate = Y.encodeStateAsUpdate(onlineDoc, Y.encodeStateVector(baseDoc))
+      service.processUpdate(categoryId, onlineUpdate)
+
+      const reconnected = await service.initializeConnection(roomId, categoryId, socketId, Y.encodeStateVector(clientDoc))
+      if (reconnected.update) {
+        Y.applyUpdate(clientDoc, new Uint8Array(reconnected.update))
+      }
+
+      const clientUpdate = Y.encodeStateAsUpdate(clientDoc, new Uint8Array(reconnected.serverStateVector))
+      service.processUpdate(categoryId, clientUpdate)
+      service.processUpdate(categoryId, clientUpdate)
+
+      const verificationDoc = new Y.Doc()
+      const verification = await service.initializeConnection(roomId, categoryId, 'verification-socket', Y.encodeStateVector(verificationDoc))
+      Y.applyUpdate(verificationDoc, new Uint8Array(verification.update!))
+
+      expect(verificationDoc.getMap('fixture').toJSON()).toEqual(clientDoc.getMap('fixture').toJSON())
+
+      verificationDoc.destroy()
+      onlineDoc.destroy()
+      clientDoc.destroy()
+      baseDoc.destroy()
     })
   })
 

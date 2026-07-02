@@ -83,14 +83,20 @@ describe('CanvasGateway', () => {
 
   describe('onCanvasAttach', () => {
     it('캔버스 참여 요청 시 초기화 로직을 수행하고 룸에 조인해야 한다', async () => {
-      const payload: CanvasAttachPayload = { roomId: 'room-1', canvasId: 'canvas-1' }
-      const mockResponse = { docKey: 'room-1-canvas-1', update: new Uint8Array([1, 2, 3]) }
+      const payload: CanvasAttachPayload = { roomId: 'room-1', canvasId: 'canvas-1', clientStateVector: [0] }
+      const mockResponse = { docKey: 'room-1-canvas-1', update: [1, 2, 3], serverStateVector: [0] }
 
       mockYjsService.initializeConnection.mockResolvedValue(mockResponse)
 
       await gateway.onCanvasAttach(mockSocket, payload)
 
-      expect(mockYjsService.initializeConnection).toHaveBeenCalledWith(payload.roomId, payload.canvasId, mockSocket.id)
+      expect(mockYjsService.initializeConnection).toHaveBeenCalledWith(
+        payload.roomId,
+        payload.canvasId,
+        mockSocket.id,
+        new Uint8Array(payload.clientStateVector!),
+      )
+      expect((mockSocket.join as jest.Mock).mock.invocationCallOrder[0]).toBeLessThan(mockYjsService.initializeConnection.mock.invocationCallOrder[0])
       // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(mockSocket.join).toHaveBeenCalledWith(`canvas:${payload.canvasId}`)
       // eslint-disable-next-line @typescript-eslint/unbound-method
@@ -104,6 +110,17 @@ describe('CanvasGateway', () => {
       mockYjsService.initializeConnection.mockRejectedValue(error)
 
       await expect(gateway.onCanvasAttach(mockSocket, payload)).rejects.toThrow(error)
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(mockSocket.leave).toHaveBeenCalledWith(`canvas:${payload.canvasId}`)
+    })
+
+    it('구버전 클라이언트가 state vector를 보내지 않으면 전체 동기화 방식으로 초기화해야 한다', async () => {
+      const payload: CanvasAttachPayload = { roomId: 'room-1', canvasId: 'canvas-1' }
+      mockYjsService.initializeConnection.mockResolvedValue({ docKey: 'room-1-canvas-1', update: [1], serverStateVector: [0] })
+
+      await gateway.onCanvasAttach(mockSocket, payload)
+
+      expect(mockYjsService.initializeConnection).toHaveBeenCalledWith(payload.roomId, payload.canvasId, mockSocket.id, undefined)
     })
   })
 
