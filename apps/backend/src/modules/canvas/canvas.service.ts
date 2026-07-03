@@ -11,6 +11,8 @@ interface YjsDocument {
   categoryId: string
 }
 
+const YJS_COMPACTION_LOG_THRESHOLD = 100
+
 @Injectable()
 export class CanvasService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(CanvasService.name)
@@ -218,6 +220,21 @@ export class CanvasService implements OnModuleInit, OnModuleDestroy {
 
         // 2. 실패한 데이터(updates)를 앞에, 새 데이터(newUpdates)를 뒤에 붙여서 복구 (순서: 실패한 과거 데이터 -> 새로 들어온 최신 데이터)
         this.updateBuffer.set(categoryId, [...updates, ...newUpdates])
+        continue
+      }
+
+      try {
+        const result = await this.canvasRepository.compactUpdateLogs(categoryId, YJS_COMPACTION_LOG_THRESHOLD)
+        if (result.compacted) {
+          this.logger.log(
+            `[Yjs] Compacted ${result.compactedLogCount} logs for category ${categoryId} ` +
+              `(snapshot=${result.snapshotByteLength}B, lastLogId=${result.lastLogId?.toString()})`,
+          )
+        }
+      } catch (err) {
+        // update log 저장은 이미 완료되었다. compaction 실패는 데이터 유실이 아니므로
+        // 버퍼에 복구하지 않고 다음 flush에서 다시 시도한다.
+        this.logger.error(`Compaction failed for ${categoryId}; persisted logs remain intact`, err)
       }
     }
   }

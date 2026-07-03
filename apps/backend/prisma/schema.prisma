@@ -51,9 +51,10 @@ model CategoryUpdateLog {
 }
 
 model CategorySnapshot {
-  categoryId  String   @id @map("category_id") @db.Uuid
-  stateVector Bytes    @map("state_vector")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  categoryId   String   @id @map("category_id") @db.Uuid
+  snapshotData Bytes    @map("snapshot_data")
+  lastLogId    BigInt   @map("last_log_id")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
   category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
 

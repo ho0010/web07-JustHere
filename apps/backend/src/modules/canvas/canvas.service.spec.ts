@@ -13,6 +13,7 @@ describe('YjsService', () => {
   let mockRepository: {
     getMergedUpdate: jest.Mock
     saveUpdateLog: jest.Mock
+    compactUpdateLogs: jest.Mock
   }
 
   beforeEach(async () => {
@@ -23,6 +24,7 @@ describe('YjsService', () => {
     mockRepository = {
       getMergedUpdate: jest.fn(),
       saveUpdateLog: jest.fn(),
+      compactUpdateLogs: jest.fn().mockResolvedValue({ compacted: false, compactedLogCount: 0 }),
     }
 
     const module: TestingModule = await Test.createTestingModule({
@@ -353,6 +355,31 @@ describe('YjsService', () => {
       expect(mockRepository.saveUpdateLog).not.toHaveBeenCalled()
     })
 
+    it('update log 저장 성공 후 compaction 임계값을 확인해야 한다', async () => {
+      const doc = new Y.Doc()
+      doc.getText('t').insert(0, 'snapshot candidate')
+      service.processUpdate(categoryId, Y.encodeStateAsUpdate(doc))
+
+      await service.flushBufferToDB()
+
+      expect(mockRepository.compactUpdateLogs).toHaveBeenCalledWith(categoryId, 100)
+    })
+
+    it('compaction 실패 시 이미 저장된 update를 버퍼에 다시 넣지 않아야 한다', async () => {
+      const doc = new Y.Doc()
+      doc.getText('t').insert(0, 'persisted')
+      service.processUpdate(categoryId, Y.encodeStateAsUpdate(doc))
+      mockRepository.compactUpdateLogs.mockRejectedValueOnce(new Error('Compaction Error'))
+
+      await service.flushBufferToDB()
+      await service.flushBufferToDB()
+
+      expect(mockRepository.saveUpdateLog).toHaveBeenCalledTimes(1)
+      expect(mockRepository.compactUpdateLogs).toHaveBeenCalledTimes(1)
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(Logger.prototype.error).toHaveBeenCalledWith(`Compaction failed for ${categoryId}; persisted logs remain intact`, expect.any(Error))
+    })
+
     it('DB 저장 실패 시 버퍼를 복구해야 하며, 그 사이 들어온 새 데이터도 보존해야 한다', async () => {
       const doc = new Y.Doc()
       doc.getText('t').insert(0, 'old')
@@ -383,6 +410,7 @@ describe('YjsService', () => {
       await service.flushBufferToDB()
 
       expect(mockRepository.saveUpdateLog).toHaveBeenCalledTimes(2)
+      expect(mockRepository.compactUpdateLogs).toHaveBeenCalledTimes(1)
     })
   })
 })
