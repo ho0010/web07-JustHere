@@ -79,6 +79,7 @@ export const useYjsDoc = ({ roomId, canvasId }: UseYjsDocProps) => {
   const localMaxTimestampRef = useRef(0)
   const [sharedTypes, setSharedTypes] = useState<YjsSharedTypes | null>(null)
   const [isLocalPersistenceReady, setIsLocalPersistenceReady] = useState(false)
+  const [localPersistenceError, setLocalPersistenceError] = useState<Error | null>(null)
 
   const [postits, setPostits] = useState<PostIt[]>([])
   const [placeCards, setPlaceCards] = useState<PlaceCard[]>([])
@@ -92,6 +93,7 @@ export const useYjsDoc = ({ roomId, canvasId }: UseYjsDocProps) => {
     docRef.current = doc
     localMaxTimestampRef.current = 0
     setIsLocalPersistenceReady(false)
+    setLocalPersistenceError(null)
 
     let localPersistence: YjsLocalPersistence | null = null
     try {
@@ -102,8 +104,11 @@ export const useYjsDoc = ({ roomId, canvasId }: UseYjsDocProps) => {
           if (!disposed) setIsLocalPersistenceReady(true)
         })
         .catch(error => {
+          if (disposed) return
+          const persistenceError = error instanceof Error ? error : new Error('Yjs IndexedDB 동기화에 실패했습니다.')
+          setLocalPersistenceError(persistenceError)
           reportError({
-            error,
+            error: persistenceError,
             code: 'CLIENT_UNKNOWN',
             level: 'warning',
             context: { source: 'yjs_indexeddb_sync', roomId, canvasId },
@@ -111,8 +116,10 @@ export const useYjsDoc = ({ roomId, canvasId }: UseYjsDocProps) => {
           if (!disposed) setIsLocalPersistenceReady(true)
         })
     } catch (error) {
+      const persistenceError = error instanceof Error ? error : new Error('Yjs IndexedDB 초기화에 실패했습니다.')
+      setLocalPersistenceError(persistenceError)
       reportError({
-        error,
+        error: persistenceError,
         code: 'CLIENT_UNKNOWN',
         level: 'warning',
         context: { source: 'yjs_indexeddb_init', roomId, canvasId },
@@ -207,6 +214,7 @@ export const useYjsDoc = ({ roomId, canvasId }: UseYjsDocProps) => {
     docRef,
     localPersistenceRef,
     isLocalPersistenceReady,
+    localPersistenceError,
     localOriginRef,
     localMaxTimestampRef,
     sharedTypes,
