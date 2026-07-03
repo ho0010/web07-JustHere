@@ -10,6 +10,7 @@ export class CanvasDetachPayload {
 
 export class YjsUpdatePayload {
   canvasId!: string
+  updateId?: string
   update!: number[]
 }
 

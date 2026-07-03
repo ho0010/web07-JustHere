@@ -34,6 +34,10 @@ describe('CanvasGateway', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks()
+    mockYjsService.processUpdate.mockReturnValue({
+      shouldBroadcast: true,
+      persisted: Promise.resolve({ canvasId: 'canvas-1', updateId: '00000000-0000-4000-8000-000000000001', status: 'persisted' }),
+    })
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [CanvasGateway, { provide: CanvasService, useValue: mockYjsService }, { provide: CanvasBroadcaster, useValue: mockBroadcaster }],
@@ -144,17 +148,46 @@ describe('CanvasGateway', () => {
   })
 
   describe('onYjsUpdate', () => {
-    it('Yjs 업데이트 수신 시 Uint8Array로 변환하여 처리하고 브로드캐스트해야 한다', () => {
+    it('Yjs 업데이트를 즉시 브로드캐스트하고 DB 저장 후 ack해야 한다', async () => {
       const payload: YjsUpdatePayload = {
         canvasId: 'canvas-1',
+        updateId: '00000000-0000-4000-8000-000000000001',
         update: [1, 2, 3],
       }
 
-      gateway.onYjsUpdate(mockSocket, payload)
+      await gateway.onYjsUpdate(mockSocket, payload)
 
-      expect(mockYjsService.processUpdate).toHaveBeenCalledWith(payload.canvasId, expect.any(Uint8Array))
+      expect(mockYjsService.processUpdate).toHaveBeenCalledWith(payload.canvasId, payload.updateId, expect.any(Uint8Array))
 
       expect(mockBroadcaster.emitToCanvas).toHaveBeenCalledWith(payload.canvasId, 'y:update', payload, { exceptSocketId: mockSocket.id })
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(mockSocket.emit).toHaveBeenCalledWith('y:update:ack', {
+        canvasId: payload.canvasId,
+        updateId: payload.updateId,
+        status: 'persisted',
+      })
+    })
+
+    it('같은 update ID 재전송은 브로드캐스트하지 않고 duplicate ack해야 한다', async () => {
+      const payload: YjsUpdatePayload = {
+        canvasId: 'canvas-1',
+        updateId: '00000000-0000-4000-8000-000000000001',
+        update: [1, 2, 3],
+      }
+      mockYjsService.processUpdate.mockReturnValue({
+        shouldBroadcast: false,
+        persisted: Promise.resolve({ canvasId: payload.canvasId, updateId: payload.updateId, status: 'duplicate' }),
+      })
+
+      await gateway.onYjsUpdate(mockSocket, payload)
+
+      expect(mockBroadcaster.emitToCanvas).not.toHaveBeenCalled()
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(mockSocket.emit).toHaveBeenCalledWith('y:update:ack', {
+        canvasId: payload.canvasId,
+        updateId: payload.updateId,
+        status: 'duplicate',
+      })
     })
   })
 

@@ -9,10 +9,12 @@ import { ErrorType } from '@/lib/types/response.type'
 describe('YjsService', () => {
   let service: CanvasService
 
+  const updateId = (sequence: number) => `00000000-0000-4000-8000-${sequence.toString().padStart(12, '0')}`
+
   // Manual Mock 객체 정의
   let mockRepository: {
     getMergedUpdate: jest.Mock
-    saveUpdateLog: jest.Mock
+    saveDurableUpdates: jest.Mock
     compactUpdateLogs: jest.Mock
   }
 
@@ -23,7 +25,9 @@ describe('YjsService', () => {
     // Mock 구현체 초기화
     mockRepository = {
       getMergedUpdate: jest.fn(),
-      saveUpdateLog: jest.fn(),
+      saveDurableUpdates: jest.fn().mockImplementation((_categoryId: string, updates: Array<{ updateId: string }>) => {
+        return Promise.resolve(new Map(updates.map(update => [update.updateId, 'persisted'])))
+      }),
       compactUpdateLogs: jest.fn().mockResolvedValue({ compacted: false, compactedLogCount: 0 }),
     }
 
@@ -65,6 +69,7 @@ describe('YjsService', () => {
       expect(result.docKey).toBe(`${roomId}-${categoryId}`)
       expect(result.update).toBeUndefined()
       expect(result.serverStateVector).toEqual(Array.from(Y.encodeStateVector(new Y.Doc())))
+      expect(result.durableAckSupported).toBe(true)
       expect(mockRepository.getMergedUpdate).toHaveBeenCalledWith(categoryId)
     })
 
@@ -167,7 +172,7 @@ describe('YjsService', () => {
 
       const remoteDoc = new Y.Doc()
       remoteDoc.getMap('fixture').set('server-only', 'online edit')
-      service.processUpdate(categoryId, Y.encodeStateAsUpdate(remoteDoc))
+      service.processUpdate(categoryId, updateId(1), Y.encodeStateAsUpdate(remoteDoc))
 
       const reconnected = await service.initializeConnection(roomId, categoryId, socketId, Y.encodeStateVector(clientDoc))
       if (reconnected.update) {
@@ -175,7 +180,7 @@ describe('YjsService', () => {
       }
 
       const clientOnlyUpdate = Y.encodeStateAsUpdate(clientDoc, new Uint8Array(reconnected.serverStateVector))
-      service.processUpdate(categoryId, clientOnlyUpdate)
+      service.processUpdate(categoryId, updateId(2), clientOnlyUpdate)
 
       const verificationDoc = new Y.Doc()
       const verification = await service.initializeConnection(roomId, categoryId, 'verification-socket', Y.encodeStateVector(verificationDoc))
@@ -209,7 +214,7 @@ describe('YjsService', () => {
       Y.applyUpdate(onlineDoc, baseUpdate)
       onlineDoc.getMap('fixture').set('conflict', 'online client')
       const onlineUpdate = Y.encodeStateAsUpdate(onlineDoc, Y.encodeStateVector(baseDoc))
-      service.processUpdate(categoryId, onlineUpdate)
+      service.processUpdate(categoryId, updateId(3), onlineUpdate)
 
       const reconnected = await service.initializeConnection(roomId, categoryId, socketId, Y.encodeStateVector(clientDoc))
       if (reconnected.update) {
@@ -217,8 +222,8 @@ describe('YjsService', () => {
       }
 
       const clientUpdate = Y.encodeStateAsUpdate(clientDoc, new Uint8Array(reconnected.serverStateVector))
-      service.processUpdate(categoryId, clientUpdate)
-      service.processUpdate(categoryId, clientUpdate)
+      service.processUpdate(categoryId, updateId(4), clientUpdate)
+      service.processUpdate(categoryId, updateId(4), clientUpdate)
 
       const verificationDoc = new Y.Doc()
       const verification = await service.initializeConnection(roomId, categoryId, 'verification-socket', Y.encodeStateVector(verificationDoc))
@@ -292,12 +297,12 @@ describe('YjsService', () => {
       clientDoc.getText('content').insert(0, 'A')
       const update = Y.encodeStateAsUpdate(clientDoc)
 
-      expect(() => service.processUpdate(categoryId, update)).not.toThrow()
+      expect(() => service.processUpdate(categoryId, updateId(10), update)).not.toThrow()
     })
 
     it('존재하지 않는 캔버스에 업데이트 시 NotFound 예외를 던져야 한다', () => {
       const update = new Uint8Array([0, 0])
-      expect(() => service.processUpdate('invalid-cat', update)).toThrow(
+      expect(() => service.processUpdate('invalid-cat', updateId(11), update)).toThrow(
         new CustomException(ErrorType.NotFound, '활성화된 캔버스 세션을 찾을 수 없습니다. 다시 접속해주세요.'),
       )
     })
@@ -305,9 +310,68 @@ describe('YjsService', () => {
     it('잘못된 형식의 업데이트 데이터인 경우 BadRequest 예외를 던져야 한다', () => {
       const invalidUpdate = new Uint8Array([1, 2, 3, 4, 5])
 
-      expect(() => service.processUpdate(categoryId, invalidUpdate)).toThrow(
+      expect(() => service.processUpdate(categoryId, updateId(12), invalidUpdate)).toThrow(
         new CustomException(ErrorType.BadRequest, '잘못된 캔버스 데이터 형식입니다.'),
       )
+    })
+
+    it('잘못된 update ID는 BadRequest로 거절해야 한다', () => {
+      const validDoc = new Y.Doc()
+      validDoc.getMap('fixture').set('valid', true)
+
+      expect(() => service.processUpdate(categoryId, 'invalid-update-id', Y.encodeStateAsUpdate(validDoc))).toThrow(
+        new CustomException(ErrorType.BadRequest, '잘못된 Yjs update ID입니다.'),
+      )
+    })
+
+    it('같은 update ID가 ack 전에 재전송되면 동일한 저장 Promise를 공유해야 한다', () => {
+      const clientDoc = new Y.Doc()
+      clientDoc.getMap('fixture').set('value', true)
+      const update = Y.encodeStateAsUpdate(clientDoc)
+
+      const first = service.processUpdate(categoryId, updateId(13), update)
+      const duplicate = service.processUpdate(categoryId, updateId(13), update)
+
+      expect(first.shouldBroadcast).toBe(true)
+      expect(duplicate.shouldBroadcast).toBe(false)
+      expect(duplicate.persisted).toBe(first.persisted)
+    })
+
+    it('DB flush가 성공한 뒤에만 durable ack를 resolve해야 한다', async () => {
+      const clientDoc = new Y.Doc()
+      clientDoc.getMap('fixture').set('value', true)
+      const processed = service.processUpdate(categoryId, updateId(14), Y.encodeStateAsUpdate(clientDoc))
+      const ackListener = jest.fn()
+      void processed.persisted.then(ackListener)
+
+      await Promise.resolve()
+      expect(ackListener).not.toHaveBeenCalled()
+
+      await service.flushBufferToDB()
+      await expect(processed.persisted).resolves.toEqual({
+        canvasId: categoryId,
+        updateId: updateId(14),
+        status: 'persisted',
+      })
+    })
+
+    it('저장 완료된 update ID 재전송은 즉시 duplicate ack하고 다시 버퍼링하지 않아야 한다', async () => {
+      const clientDoc = new Y.Doc()
+      clientDoc.getMap('fixture').set('value', true)
+      const encodedUpdate = Y.encodeStateAsUpdate(clientDoc)
+      const first = service.processUpdate(categoryId, updateId(15), encodedUpdate)
+      await service.flushBufferToDB()
+      await first.persisted
+
+      const duplicate = service.processUpdate(categoryId, updateId(15), encodedUpdate)
+
+      expect(duplicate.shouldBroadcast).toBe(false)
+      await expect(duplicate.persisted).resolves.toEqual({
+        canvasId: categoryId,
+        updateId: updateId(15),
+        status: 'duplicate',
+      })
+      expect(mockRepository.saveDurableUpdates).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -324,7 +388,12 @@ describe('YjsService', () => {
       const doc = new Y.Doc()
       doc.getText('t').insert(0, 'a')
       const update = Y.encodeStateAsUpdate(doc)
-      service.processUpdate(categoryId, update)
+      let capturedUpdates: Array<{ updateId: string; update: Uint8Array }> = []
+      mockRepository.saveDurableUpdates.mockImplementation((_categoryId: string, updates: typeof capturedUpdates) => {
+        capturedUpdates = updates
+        return Promise.resolve(new Map(updates.map(item => [item.updateId, 'persisted'])))
+      })
+      service.processUpdate(categoryId, updateId(20), update)
 
       // 1. 인터벌 시작
       service.onModuleInit()
@@ -333,32 +402,41 @@ describe('YjsService', () => {
       jest.advanceTimersByTime(5000)
       await Promise.resolve() // 마이크로태스크 큐 처리
 
-      expect(mockRepository.saveUpdateLog).toHaveBeenCalledWith(categoryId, expect.any(Uint8Array))
+      expect(capturedUpdates).toHaveLength(1)
+      expect(capturedUpdates[0].updateId).toBe(updateId(20))
+      expect(capturedUpdates[0].update).toBeInstanceOf(Uint8Array)
     })
 
     it('onModuleDestroy: 종료 시 버퍼 내용을 DB에 저장해야 한다', async () => {
       const doc = new Y.Doc()
       doc.getText('t').insert(0, 'b')
       const update = Y.encodeStateAsUpdate(doc)
-      service.processUpdate(categoryId, update)
+      let capturedUpdates: Array<{ updateId: string; update: Uint8Array }> = []
+      mockRepository.saveDurableUpdates.mockImplementation((_categoryId: string, updates: typeof capturedUpdates) => {
+        capturedUpdates = updates
+        return Promise.resolve(new Map(updates.map(item => [item.updateId, 'persisted'])))
+      })
+      service.processUpdate(categoryId, updateId(21), update)
 
       service.onModuleDestroy()
       await Promise.resolve()
 
-      expect(mockRepository.saveUpdateLog).toHaveBeenCalledWith(categoryId, expect.any(Uint8Array))
+      expect(capturedUpdates).toHaveLength(1)
+      expect(capturedUpdates[0].updateId).toBe(updateId(21))
+      expect(capturedUpdates[0].update).toBeInstanceOf(Uint8Array)
     })
 
     it('버퍼가 비어있으면 DB 저장을 수행하지 않아야 한다', async () => {
       service.onModuleDestroy()
       await Promise.resolve()
 
-      expect(mockRepository.saveUpdateLog).not.toHaveBeenCalled()
+      expect(mockRepository.saveDurableUpdates).not.toHaveBeenCalled()
     })
 
     it('update log 저장 성공 후 compaction 임계값을 확인해야 한다', async () => {
       const doc = new Y.Doc()
       doc.getText('t').insert(0, 'snapshot candidate')
-      service.processUpdate(categoryId, Y.encodeStateAsUpdate(doc))
+      service.processUpdate(categoryId, updateId(22), Y.encodeStateAsUpdate(doc))
 
       await service.flushBufferToDB()
 
@@ -368,13 +446,13 @@ describe('YjsService', () => {
     it('compaction 실패 시 이미 저장된 update를 버퍼에 다시 넣지 않아야 한다', async () => {
       const doc = new Y.Doc()
       doc.getText('t').insert(0, 'persisted')
-      service.processUpdate(categoryId, Y.encodeStateAsUpdate(doc))
+      service.processUpdate(categoryId, updateId(23), Y.encodeStateAsUpdate(doc))
       mockRepository.compactUpdateLogs.mockRejectedValueOnce(new Error('Compaction Error'))
 
       await service.flushBufferToDB()
       await service.flushBufferToDB()
 
-      expect(mockRepository.saveUpdateLog).toHaveBeenCalledTimes(1)
+      expect(mockRepository.saveDurableUpdates).toHaveBeenCalledTimes(1)
       expect(mockRepository.compactUpdateLogs).toHaveBeenCalledTimes(1)
       // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(Logger.prototype.error).toHaveBeenCalledWith(`Compaction failed for ${categoryId}; persisted logs remain intact`, expect.any(Error))
@@ -384,10 +462,12 @@ describe('YjsService', () => {
       const doc = new Y.Doc()
       doc.getText('t').insert(0, 'old')
       const oldUpdate = Y.encodeStateAsUpdate(doc)
-      service.processUpdate(categoryId, oldUpdate)
+      const oldProcessed = service.processUpdate(categoryId, updateId(24), oldUpdate)
+      const ackListener = jest.fn()
+      void oldProcessed.persisted.then(ackListener)
 
       // DB 저장 실패 Mocking
-      mockRepository.saveUpdateLog.mockRejectedValueOnce(new Error('DB Save Error'))
+      mockRepository.saveDurableUpdates.mockRejectedValueOnce(new Error('DB Save Error'))
 
       // private method 호출을 위해 any 캐스팅
       const flushPromise = service.flushBufferToDB()
@@ -396,20 +476,32 @@ describe('YjsService', () => {
       const doc2 = new Y.Doc()
       doc2.getText('t').insert(0, 'new')
       const newUpdate = Y.encodeStateAsUpdate(doc2)
-      service.processUpdate(categoryId, newUpdate)
+      service.processUpdate(categoryId, updateId(25), newUpdate)
 
       // Flush 완료 대기
       await flushPromise
+      await Promise.resolve()
 
       // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(Logger.prototype.error).toHaveBeenCalled()
+      expect(ackListener).not.toHaveBeenCalled()
 
       // 버퍼가 복구되었는지 확인 (old + new)
       // 다시 Flush 시도하여 verify
-      mockRepository.saveUpdateLog.mockResolvedValueOnce(undefined)
+      mockRepository.saveDurableUpdates.mockResolvedValueOnce(
+        new Map([
+          [updateId(24), 'persisted'],
+          [updateId(25), 'persisted'],
+        ]),
+      )
       await service.flushBufferToDB()
+      await expect(oldProcessed.persisted).resolves.toEqual({
+        canvasId: categoryId,
+        updateId: updateId(24),
+        status: 'persisted',
+      })
 
-      expect(mockRepository.saveUpdateLog).toHaveBeenCalledTimes(2)
+      expect(mockRepository.saveDurableUpdates).toHaveBeenCalledTimes(2)
       expect(mockRepository.compactUpdateLogs).toHaveBeenCalledTimes(1)
     })
   })

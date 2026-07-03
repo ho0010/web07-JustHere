@@ -29,9 +29,10 @@ model Category {
   orderIndex Int      @default(0) @map("order_index")
   createdAt  DateTime @default(now()) @map("created_at")
 
-  room       Room                @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  updateLogs CategoryUpdateLog[]
-  snapshot   CategorySnapshot?
+  room           Room                    @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  updateLogs     CategoryUpdateLog[]
+  updateReceipts CategoryUpdateReceipt[]
+  snapshot       CategorySnapshot?
 
   @@index([roomId])
   @@index([roomId, orderIndex])
@@ -48,6 +49,18 @@ model CategoryUpdateLog {
 
   @@index([categoryId, createdAt])
   @@map("category_update_logs")
+}
+
+model CategoryUpdateReceipt {
+  categoryId String   @map("category_id") @db.Uuid
+  updateId   String   @map("update_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([categoryId, updateId])
+  @@index([categoryId, createdAt])
+  @@map("category_update_receipts")
 }
 
 model CategorySnapshot {

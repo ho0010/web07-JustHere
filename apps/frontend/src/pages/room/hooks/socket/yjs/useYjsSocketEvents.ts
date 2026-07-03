@@ -15,6 +15,8 @@ interface UseYjsSocketEventsOptions {
   docRef: { current: YDoc | null }
   applyAwareness: (payload: YjsAwarenessBroadcast) => void
   trackHighFreq: (key: string, bytes?: number) => void
+  onDurableAckCapability?: (supported: boolean) => void
+  onReconciledUpdate?: (update: Uint8Array | null) => void
   onSynced?: () => void
 }
 
@@ -26,6 +28,8 @@ export const useYjsSocketEvents = ({
   docRef,
   applyAwareness,
   trackHighFreq,
+  onDurableAckCapability,
+  onReconciledUpdate,
   onSynced,
 }: UseYjsSocketEventsOptions) => {
   useEffect(() => {
@@ -35,15 +39,21 @@ export const useYjsSocketEvents = ({
     const doc = docRef.current
     if (!socket || !doc) return
 
-    const handleCanvasAttached = ({ update, serverStateVector }: CanvasAttachedPayload) => {
+    const handleCanvasAttached = ({ update, serverStateVector, durableAckSupported }: CanvasAttachedPayload) => {
+      onDurableAckCapability?.(durableAckSupported === true)
       const updateArray = update ? new Uint8Array(update) : null
       if (updateArray && updateArray.byteLength > 0) {
         measureCanvasPerformance('yjsInitialApply', () => YapplyUpdate(doc, updateArray, socket))
       }
 
       const clientUpdate = serverStateVector ? createMissingYjsUpdate(doc, new Uint8Array(serverStateVector)) : null
-      if (clientUpdate) {
+      if (clientUpdate && !onReconciledUpdate) {
         trackHighFreq(YJS_EVENTS.updateSend, clientUpdate.byteLength)
+      }
+      if (onReconciledUpdate) {
+        onReconciledUpdate(clientUpdate)
+      } else if (clientUpdate) {
+        // 구버전 호출부 호환: durable outbox가 주입되지 않은 경우 기존 방식으로 전송한다.
         socket.emit(YJS_EVENTS.update, { canvasId, update: Array.from(clientUpdate) })
       }
 
@@ -85,5 +95,5 @@ export const useYjsSocketEvents = ({
       socket.off(YJS_EVENTS.update, handleYjsUpdate)
       socket.off(YJS_EVENTS.awareness, handleAwareness)
     }
-  }, [resolveSocket, enabled, roomId, canvasId, docRef, applyAwareness, trackHighFreq, onSynced])
+  }, [resolveSocket, enabled, roomId, canvasId, docRef, applyAwareness, trackHighFreq, onDurableAckCapability, onReconciledUpdate, onSynced])
 }

@@ -299,6 +299,11 @@
             "type": "array",
             "description": "응답 시점의 서버 Yjs state vector. 클라이언트는 이를 기준으로 서버에 없는 로컬 diff를 계산합니다.",
             "items": { "type": "number" }
+          },
+          "durableAckSupported": {
+            "type": "boolean",
+            "description": "서버가 updateId 기반 durable ack 프로토콜을 지원하는지 여부",
+            "example": true
           }
         }
       }
@@ -332,15 +337,21 @@
       "event": "y:update",
       "namespace": "/canvas",
       "tags": ["Socket.IO Events - Yjs"],
-      "description": "Yjs 문서 업데이트를 서버로 전송하고 다른 클라이언트들에게 브로드캐스트합니다.\n\n**사용법:**\n```javascript\ndoc.on('update', (update, origin) => {\n  if (origin !== socket) {\n    socket.emit('y:update', {\n      canvasId: 'cat-uuid',\n      update: Array.from(update)\n    })\n  }\n})\n```\n\n**네임스페이스:** /canvas\n**응답 이벤트:** y:update (같은 캔버스의 다른 클라이언트들에게 브로드캐스트)\n**부가 효과:** 서버에서 5초마다 배치로 DB 저장",
+      "description": "Yjs 문서 업데이트를 서버로 전송하고 다른 클라이언트들에게 즉시 브로드캐스트합니다. 클라이언트는 UUID updateId를 ack 전까지 보관하고, ack가 유실되면 같은 ID로 재전송합니다.\n\n**사용법:**\n```javascript\ndoc.on('update', (update, origin) => {\n  if (origin !== socket) {\n    socket.emit('y:update', {\n      canvasId: 'cat-uuid',\n      updateId: crypto.randomUUID(),\n      update: Array.from(update)\n    })\n  }\n})\n```\n\n**네임스페이스:** /canvas\n**브로드캐스트:** y:update\n**영속 저장 응답:** y:update:ack",
       "request": {
         "type": "object",
-        "required": ["canvasId", "update"],
+        "required": ["canvasId", "updateId", "update"],
         "properties": {
           "canvasId": {
             "type": "string",
             "description": "업데이트가 발생한 캔버스 UUID",
             "example": "cat-550e8400-e29b-41d4-a716-446655440000"
+          },
+          "updateId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "재전송 멱등 처리를 위한 클라이언트 생성 UUID",
+            "example": "550e8400-e29b-41d4-a716-446655440000"
           },
           "update": {
             "type": "array",
@@ -353,17 +364,50 @@
       "response": {
         "type": "object",
         "description": "동일한 업데이트를 다른 클라이언트들에게 브로드캐스트 (y:update 이벤트)",
-        "required": ["canvasId", "update"],
+        "required": ["canvasId", "updateId", "update"],
         "properties": {
           "canvasId": {
             "type": "string",
             "description": "업데이트가 발생한 캔버스 UUID",
             "example": "cat-550e8400-e29b-41d4-a716-446655440000"
           },
+          "updateId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "송신자가 부여한 update UUID"
+          },
           "update": {
             "type": "array",
             "description": "Yjs update (number[])",
             "items": { "type": "number" }
+          }
+        }
+      }
+    },
+    {
+      "operationId": "",
+      "path": "y:update:ack",
+      "event": "y:update:ack",
+      "namespace": "/canvas",
+      "tags": ["Socket.IO Events - Yjs"],
+      "description": "서버가 Yjs update와 receipt를 DB transaction으로 영속 저장한 뒤 송신 클라이언트에게만 반환합니다. persisted는 최초 저장, duplicate는 같은 updateId가 이미 저장된 경우입니다.",
+      "response": {
+        "type": "object",
+        "required": ["canvasId", "updateId", "status"],
+        "properties": {
+          "canvasId": {
+            "type": "string",
+            "description": "영속 저장된 캔버스 UUID"
+          },
+          "updateId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "ack 대상 update UUID"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["persisted", "duplicate"],
+            "description": "최초 저장 또는 멱등 중복 처리 여부"
           }
         }
       }
