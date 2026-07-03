@@ -8,7 +8,7 @@ import { socketBaseUrl } from '@/shared/config/socket'
 import { addSocketBreadcrumb, reportError } from '@/shared/utils'
 import { CANVAS_EVENTS, CURSOR_FREQUENCY, YJS_EVENTS, YJS_UPDATE_RETRY_MS } from '@/pages/room/constants'
 import { useCursorPresenceStore } from '@/pages/room/stores'
-import { useYjsDoc, useYjsHistory, useYjsSocketEvents, useYjsTelemetry, useYjsCommands, YjsDurableOutbox } from './yjs'
+import { useYjsDoc, useYjsHistory, useYjsSocketEvents, useYjsTelemetry, useYjsCommands, YjsDurableOutbox, resolveYjsSyncStatus } from './yjs'
 
 interface UseYjsSocketOptions {
   roomId: string
@@ -24,6 +24,9 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
   const durableAckSupportedRef = useRef(false)
   const durableOutboxRef = useRef(new YjsDurableOutbox())
   const [isOutboxPersistenceReady, setIsOutboxPersistenceReady] = useState(false)
+  const [outboxPersistenceError, setOutboxPersistenceError] = useState<Error | null>(null)
+  const [pendingUpdateCount, setPendingUpdateCount] = useState(0)
+  const [isSyncReady, setIsSyncReady] = useState(false)
 
   const applyAwareness = useCursorPresenceStore(state => state.applyAwareness)
   const clearCursors = useCursorPresenceStore(state => state.clearCursors)
@@ -32,6 +35,7 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
     docRef,
     localPersistenceRef,
     isLocalPersistenceReady,
+    localPersistenceError,
     localOriginRef,
     localMaxTimestampRef,
     sharedTypes,
@@ -80,6 +84,7 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
   )
   const markSyncReady = useCallback(() => {
     syncReadyRef.current = true
+    setIsSyncReady(true)
   }, [])
   const setDurableAckCapability = useCallback((supported: boolean) => {
     durableAckSupportedRef.current = supported
@@ -100,6 +105,13 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
   })
   const isPersistenceReady = isLocalPersistenceReady && isOutboxPersistenceReady
   const isConnected = status === 'connected' && isPersistenceReady
+  const syncStatus = resolveYjsSyncStatus({
+    persistenceReady: isPersistenceReady,
+    socketStatus: status,
+    syncReady: isSyncReady,
+    pendingUpdateCount,
+    hasPersistenceError: localPersistenceError !== null || outboxPersistenceError !== null,
+  })
 
   useEffect(() => {
     canvasIdRef.current = canvasId
@@ -137,7 +149,9 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
     let writeQueue: Promise<void> | null = null
 
     outbox.clear()
+    setPendingUpdateCount(0)
     setIsOutboxPersistenceReady(false)
+    setOutboxPersistenceError(null)
 
     if (!isLocalPersistenceReady) return
 
@@ -153,22 +167,34 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
         if (disposed) return
 
         outbox.restore(payloads, canvasId)
+        setPendingUpdateCount(outbox.size)
         unsubscribe = outbox.subscribe(snapshot => {
+          setPendingUpdateCount(snapshot.length)
           const save = writeQueue ? writeQueue.then(() => persistence.saveOutbox(snapshot)) : persistence.saveOutbox(snapshot)
-          writeQueue = save.catch(error => {
-            reportError({
-              error,
-              code: 'CLIENT_UNKNOWN',
-              level: 'warning',
-              context: { source: 'yjs_outbox_save', roomId, canvasId },
+          writeQueue = save
+            .then(() => {
+              if (!disposed) setOutboxPersistenceError(null)
             })
-          })
+            .catch(error => {
+              if (disposed) return
+              const persistenceError = error instanceof Error ? error : new Error('Yjs outbox 저장에 실패했습니다.')
+              setOutboxPersistenceError(persistenceError)
+              reportError({
+                error: persistenceError,
+                code: 'CLIENT_UNKNOWN',
+                level: 'warning',
+                context: { source: 'yjs_outbox_save', roomId, canvasId },
+              })
+            })
         })
         setIsOutboxPersistenceReady(true)
       })
       .catch(error => {
+        if (disposed) return
+        const persistenceError = error instanceof Error ? error : new Error('Yjs outbox 복원에 실패했습니다.')
+        setOutboxPersistenceError(persistenceError)
         reportError({
-          error,
+          error: persistenceError,
           code: 'CLIENT_UNKNOWN',
           level: 'warning',
           context: { source: 'yjs_outbox_load', roomId, canvasId },
@@ -212,6 +238,7 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
 
     const handleConnect = () => {
       syncReadyRef.current = false
+      setIsSyncReady(false)
       durableAckSupportedRef.current = false
       const attachPayload: CanvasAttachPayload = {
         roomId,
@@ -224,6 +251,7 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
 
     const handleDisconnect = () => {
       syncReadyRef.current = false
+      setIsSyncReady(false)
       durableAckSupportedRef.current = false
     }
 
@@ -267,6 +295,7 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
       socket.off(YJS_EVENTS.updateAck, handleUpdateAck)
       window.clearInterval(retryInterval)
       syncReadyRef.current = false
+      setIsSyncReady(false)
       if (socketRef.current === socket) {
         socketRef.current = null
       }
@@ -329,6 +358,8 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
 
   return {
     isConnected,
+    syncStatus,
+    pendingUpdateCount,
     postits,
     placeCards,
     lines,

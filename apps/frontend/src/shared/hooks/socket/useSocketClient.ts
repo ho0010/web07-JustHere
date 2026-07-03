@@ -91,13 +91,15 @@ export function useSocketClient({ namespace, baseUrl, autoConnect = true, autoRe
       reconnectAttemptsRef.current = attemptNumber
       setStatus('reconnecting')
       addConnectionBreadcrumb('reconnect_attempt', { attemptNumber }, 'warning')
+    }
 
-      if (attemptNumber >= SOCKET_RECONNECTION_CONFIG.maxAttempts) {
-        setStatus('disconnected')
-        const maxRetriesError = new Error(`연결 실패: 최대 재연결 시도 횟수(${SOCKET_RECONNECTION_CONFIG.maxAttempts})를 초과했습니다.`)
-        captureError(maxRetriesError, { namespace: namespace ?? 'root' })
-        onError?.(maxRetriesError)
-      }
+    const handleReconnectFailed = () => {
+      setStatus('disconnected')
+      reconnectAttemptsRef.current = 0
+      const maxRetriesError = new Error(`연결 실패: 최대 재연결 시도 횟수(${SOCKET_RECONNECTION_CONFIG.maxAttempts})를 초과했습니다.`)
+      addConnectionBreadcrumb('reconnect_failed', undefined, 'error')
+      captureError(maxRetriesError, { namespace: namespace ?? 'root' })
+      onError?.(maxRetriesError)
     }
 
     const handleError = (error: Error) => {
@@ -108,9 +110,10 @@ export function useSocketClient({ namespace, baseUrl, autoConnect = true, autoRe
     socket.on('connect', handleConnect)
     socket.on('disconnect', handleDisconnect)
     socket.on('connect_error', handleConnectError)
-    socket.on('reconnect_attempt', handleReconnectAttempt)
-    socket.on('reconnect_error', handleError)
     socket.on('error', handleError)
+    socket.io.on('reconnect_attempt', handleReconnectAttempt)
+    socket.io.on('reconnect_error', handleError)
+    socket.io.on('reconnect_failed', handleReconnectFailed)
 
     if (autoConnect) socket.connect()
 
@@ -118,9 +121,10 @@ export function useSocketClient({ namespace, baseUrl, autoConnect = true, autoRe
       socket.off('connect', handleConnect)
       socket.off('disconnect', handleDisconnect)
       socket.off('connect_error', handleConnectError)
-      socket.off('reconnect_attempt', handleReconnectAttempt)
-      socket.off('reconnect_error', handleError)
       socket.off('error', handleError)
+      socket.io.off('reconnect_attempt', handleReconnectAttempt)
+      socket.io.off('reconnect_error', handleError)
+      socket.io.off('reconnect_failed', handleReconnectFailed)
       socket.disconnect()
       socketRef.current = null
       reconnectAttemptsRef.current = 0
