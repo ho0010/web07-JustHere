@@ -43,6 +43,7 @@ import { EditableTextBox } from './editable-textbox'
 import { Toolbar } from './toolbar'
 import { GhostLayer } from './ghost-layer'
 import { SelectionBoxLayer } from './selection-box-layer'
+import { SyncStatusIndicator } from './sync-status-indicator'
 
 interface WhiteboardCanvasProps {
   roomId: string
@@ -124,6 +125,8 @@ export const WhiteboardCanvas = ({
     updateTextBox,
     deleteCanvasItem,
     moveToTop,
+    syncStatus,
+    pendingUpdateCount,
   } = useYjsSocket({
     roomId,
     canvasId,
@@ -747,6 +750,7 @@ export const WhiteboardCanvas = ({
         <CursorLayer />
       </Stage>
       <CanvasPerformanceOverlay itemCounts={performanceItemCounts} />
+      <SyncStatusIndicator status={syncStatus} pendingUpdateCount={pendingUpdateCount} />
     </div>
   )
 }
