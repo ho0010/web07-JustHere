@@ -6,7 +6,9 @@ import { PLACE_CARD_HEIGHT, PLACE_CARD_WIDTH } from '@/pages/room/constants'
 import { measureCanvasPerformance, recordCanvasPerformanceProjection } from '@/pages/room/perf'
 import { resolveZIndexState } from '@/pages/room/utils'
 import type { YjsItemType, YjsRank, YjsSharedTypes } from '@/pages/room/types'
+import { reportError } from '@/shared/utils'
 import { YArrayProjection, type ProjectionResult } from './yArrayProjection'
+import { createYjsLocalDatabaseName, YjsLocalPersistence } from './yjsLocalPersistence'
 
 interface UseYjsDocProps {
   roomId: string
@@ -72,9 +74,11 @@ const recordProjectionResult = (result: ProjectionResult) => {
 
 export const useYjsDoc = ({ roomId, canvasId }: UseYjsDocProps) => {
   const docRef = useRef<YDoc | null>(null)
+  const localPersistenceRef = useRef<YjsLocalPersistence | null>(null)
   const localOriginRef = useRef(Symbol('canvas-local'))
   const localMaxTimestampRef = useRef(0)
   const [sharedTypes, setSharedTypes] = useState<YjsSharedTypes | null>(null)
+  const [isLocalPersistenceReady, setIsLocalPersistenceReady] = useState(false)
 
   const [postits, setPostits] = useState<PostIt[]>([])
   const [placeCards, setPlaceCards] = useState<PlaceCard[]>([])
@@ -84,8 +88,37 @@ export const useYjsDoc = ({ roomId, canvasId }: UseYjsDocProps) => {
 
   useEffect(() => {
     const doc = new YDoc()
+    let disposed = false
     docRef.current = doc
     localMaxTimestampRef.current = 0
+    setIsLocalPersistenceReady(false)
+
+    let localPersistence: YjsLocalPersistence | null = null
+    try {
+      localPersistence = new YjsLocalPersistence(createYjsLocalDatabaseName(roomId, canvasId), doc)
+      localPersistenceRef.current = localPersistence
+      void localPersistence.whenSynced
+        .then(() => {
+          if (!disposed) setIsLocalPersistenceReady(true)
+        })
+        .catch(error => {
+          reportError({
+            error,
+            code: 'CLIENT_UNKNOWN',
+            level: 'warning',
+            context: { source: 'yjs_indexeddb_sync', roomId, canvasId },
+          })
+          if (!disposed) setIsLocalPersistenceReady(true)
+        })
+    } catch (error) {
+      reportError({
+        error,
+        code: 'CLIENT_UNKNOWN',
+        level: 'warning',
+        context: { source: 'yjs_indexeddb_init', roomId, canvasId },
+      })
+      setIsLocalPersistenceReady(true)
+    }
 
     const yPostits = doc.getArray<YMap<unknown>>(YJS_TYPE[CANVAS_ITEM_TYPE.POST_IT])
     const yPlaceCards = doc.getArray<YMap<unknown>>(YJS_TYPE[CANVAS_ITEM_TYPE.PLACE_CARD])
@@ -152,13 +185,19 @@ export const useYjsDoc = ({ roomId, canvasId }: UseYjsDocProps) => {
     syncZIndexOrderToState()
 
     return () => {
+      disposed = true
       yPostits.unobserveDeep(syncPostitsToState)
       yPlaceCards.unobserveDeep(syncPlaceCardsToState)
       yLines.unobserveDeep(syncLinesToState)
       yTextBoxes.unobserveDeep(syncTextBoxesToState)
       yZRankByKey.unobserve(syncZIndexOrderToState)
       setSharedTypes(null)
+      setIsLocalPersistenceReady(false)
       localMaxTimestampRef.current = 0
+      if (localPersistenceRef.current === localPersistence) {
+        localPersistenceRef.current = null
+      }
+      void localPersistence?.destroy()
       doc.destroy()
       docRef.current = null
     }
@@ -166,6 +205,8 @@ export const useYjsDoc = ({ roomId, canvasId }: UseYjsDocProps) => {
 
   return {
     docRef,
+    localPersistenceRef,
+    isLocalPersistenceReady,
     localOriginRef,
     localMaxTimestampRef,
     sharedTypes,
