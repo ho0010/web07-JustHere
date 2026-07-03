@@ -13,6 +13,7 @@ import { Server, Socket } from 'socket.io'
 import { CanvasService } from './canvas.service'
 import { CanvasBroadcaster } from '@/modules/socket/canvas.broadcaster'
 import { CanvasAttachPayload, CanvasDetachPayload, YjsUpdatePayload, YjsAwarenessPayload } from './dto/yjs.dto'
+import { randomUUID } from 'node:crypto'
 
 @WebSocketGateway({
   namespace: '/canvas',
@@ -89,17 +90,22 @@ export class CanvasGateway implements OnGatewayInit, OnGatewayDisconnect {
    * Yjs 업데이트 수신 및 브로드캐스트
    */
   @SubscribeMessage('y:update')
-  onYjsUpdate(@ConnectedSocket() client: Socket, @MessageBody() payload: YjsUpdatePayload) {
+  async onYjsUpdate(@ConnectedSocket() client: Socket, @MessageBody() payload: YjsUpdatePayload) {
     const { canvasId, update } = payload
+    const updateId = payload.updateId ?? randomUUID()
 
     // number[] -> Uint8Array
     const updateArray = new Uint8Array(update)
 
-    // Yjs 문서에 업데이트 적용 & 버퍼링
-    this.canvasService.processUpdate(canvasId, updateArray)
+    // 메모리에는 즉시 적용하되 durable ack는 DB transaction 완료 후 전송한다.
+    const processed = this.canvasService.processUpdate(canvasId, updateId, updateArray)
 
-    // 다른 클라이언트들에게 업데이트 브로드캐스트
-    this.broadcaster.emitToCanvas(canvasId, 'y:update', payload, { exceptSocketId: client.id })
+    if (processed.shouldBroadcast) {
+      this.broadcaster.emitToCanvas(canvasId, 'y:update', { ...payload, updateId }, { exceptSocketId: client.id })
+    }
+
+    const ack = await processed.persisted
+    client.emit('y:update:ack', ack)
   }
 
   /**

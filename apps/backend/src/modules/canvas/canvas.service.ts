@@ -3,7 +3,7 @@ import { ErrorType } from '@/lib/types/response.type'
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common'
 import * as Y from 'yjs'
 import { encodeStateAsUpdate, encodeStateVector, applyUpdate } from 'yjs'
-import { CanvasRepository } from './canvas.repository'
+import { CanvasRepository, type DurableYjsUpdateStatus } from './canvas.repository'
 
 interface YjsDocument {
   doc: Y.Doc
@@ -11,7 +11,27 @@ interface YjsDocument {
   categoryId: string
 }
 
+export interface YjsUpdateAck {
+  canvasId: string
+  updateId: string
+  status: DurableYjsUpdateStatus
+}
+
+export interface ProcessedYjsUpdate {
+  shouldBroadcast: boolean
+  persisted: Promise<YjsUpdateAck>
+}
+
+interface BufferedYjsUpdate {
+  updateId: string
+  update: Uint8Array
+  resolve: (ack: YjsUpdateAck) => void
+  persisted: Promise<YjsUpdateAck>
+}
+
 const YJS_COMPACTION_LOG_THRESHOLD = 100
+const RECENTLY_PERSISTED_UPDATE_LIMIT = 5000
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 @Injectable()
 export class CanvasService implements OnModuleInit, OnModuleDestroy {
@@ -25,8 +45,14 @@ export class CanvasService implements OnModuleInit, OnModuleDestroy {
   // socketId -> Set<categoryId> 매핑 (역방향 인덱스)
   private clientConnections = new Map<string, Set<string>>()
 
-  // 업데이트 버퍼: categoryId -> 업데이트 바이너리 배열
-  private updateBuffer = new Map<string, Uint8Array[]>()
+  // 업데이트 버퍼: categoryId -> durable update 배열
+  private updateBuffer = new Map<string, BufferedYjsUpdate[]>()
+
+  // 같은 update ID가 ack 전에 재전송되면 동일한 저장 Promise를 공유한다.
+  private pendingUpdates = new Map<string, BufferedYjsUpdate>()
+
+  // ack 유실 직후 재전송을 DB flush 없이 즉시 멱등 처리하기 위한 bounded cache.
+  private recentlyPersistedUpdates = new Map<string, true>()
 
   // 배치 저장 타이머
   private saveInterval: NodeJS.Timeout
@@ -142,6 +168,7 @@ export class CanvasService implements OnModuleInit, OnModuleDestroy {
         docKey,
         update: this.hasUpdateContent(update) ? Array.from(update) : undefined,
         serverStateVector: Array.from(serverStateVector),
+        durableAckSupported: true,
       }
     } catch (error) {
       this.logger.error(`Failed to initialize connection for ${categoryId}`, error)
@@ -156,38 +183,74 @@ export class CanvasService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * [Refactor] 업데이트 처리 로직
-   * 1. 메모리 문서에 적용
-   * 2. 버퍼에 담기 (배치 저장용)
+   * 업데이트를 메모리 문서에 즉시 적용하고 durable ack용 버퍼에 담는다.
+   * 같은 update ID가 pending 또는 최근 저장 상태라면 다시 적용하거나 브로드캐스트하지 않는다.
    */
-  processUpdate(categoryId: string, update: Uint8Array): void {
+  processUpdate(categoryId: string, updateId: string, update: Uint8Array): ProcessedYjsUpdate {
     const yjsDoc = this.documents.get(categoryId)
 
     if (!yjsDoc) {
       throw new CustomException(ErrorType.NotFound, '활성화된 캔버스 세션을 찾을 수 없습니다. 다시 접속해주세요.')
     }
 
-    try {
-      // 1. 메모리 적용
-      applyUpdate(yjsDoc.doc, update)
+    if (!UUID_PATTERN.test(updateId)) {
+      throw new CustomException(ErrorType.BadRequest, '잘못된 Yjs update ID입니다.')
+    }
 
-      // 2. 업데이트 로그 버퍼링
-      this.bufferUpdate(categoryId, update)
+    const pendingKey = this.createPendingKey(categoryId, updateId)
+    if (this.recentlyPersistedUpdates.has(pendingKey)) {
+      return {
+        shouldBroadcast: false,
+        persisted: Promise.resolve({ canvasId: categoryId, updateId, status: 'duplicate' }),
+      }
+    }
+
+    const existingPending = this.pendingUpdates.get(pendingKey)
+    if (existingPending) {
+      return { shouldBroadcast: false, persisted: existingPending.persisted }
+    }
+
+    try {
+      applyUpdate(yjsDoc.doc, update)
     } catch (error) {
-      // Yjs 바이너리 형식이 깨진 경우 등
       this.logger.error(`Yjs Update Error [${categoryId}]`, error)
       throw new CustomException(ErrorType.BadRequest, '잘못된 캔버스 데이터 형식입니다.')
     }
+
+    let resolveAck!: (ack: YjsUpdateAck) => void
+    const persisted = new Promise<YjsUpdateAck>(resolve => {
+      resolveAck = resolve
+    })
+    const bufferedUpdate: BufferedYjsUpdate = {
+      updateId,
+      update,
+      resolve: resolveAck,
+      persisted,
+    }
+
+    this.pendingUpdates.set(pendingKey, bufferedUpdate)
+    this.bufferUpdate(categoryId, bufferedUpdate)
+
+    return { shouldBroadcast: true, persisted }
   }
 
-  /**
-   * YjsUpdateLog를 메모리 버퍼에 쌓음
-   */
-  private bufferUpdate(categoryId: string, update: Uint8Array) {
+  private createPendingKey(categoryId: string, updateId: string) {
+    return `${categoryId}:${updateId}`
+  }
+
+  private bufferUpdate(categoryId: string, update: BufferedYjsUpdate) {
     if (!this.updateBuffer.has(categoryId)) {
       this.updateBuffer.set(categoryId, [])
     }
     this.updateBuffer.get(categoryId)!.push(update)
+  }
+
+  private rememberPersistedUpdate(pendingKey: string) {
+    this.recentlyPersistedUpdates.set(pendingKey, true)
+    if (this.recentlyPersistedUpdates.size <= RECENTLY_PERSISTED_UPDATE_LIMIT) return
+
+    const oldestKey = this.recentlyPersistedUpdates.keys().next().value as string | undefined
+    if (oldestKey) this.recentlyPersistedUpdates.delete(oldestKey)
   }
 
   /**
@@ -200,26 +263,31 @@ export class CanvasService implements OnModuleInit, OnModuleDestroy {
     const currentBuffer = new Map(this.updateBuffer)
     this.updateBuffer.clear()
 
-    for (const [categoryId, updates] of currentBuffer.entries()) {
-      if (updates.length === 0) continue
+    for (const [categoryId, bufferedUpdates] of currentBuffer.entries()) {
+      if (bufferedUpdates.length === 0) continue
 
       try {
-        // Y.js의 핵심 기능: 여러 업데이트를 하나로 병합
-        const mergedUpdate = Y.mergeUpdates(updates)
+        const statuses = await this.canvasRepository.saveDurableUpdates(
+          categoryId,
+          bufferedUpdates.map(({ updateId, update }) => ({ updateId, update })),
+        )
 
-        // 병합된 하나만 DB에 저장
-        await this.canvasRepository.saveUpdateLog(categoryId, mergedUpdate)
+        for (const bufferedUpdate of bufferedUpdates) {
+          const pendingKey = this.createPendingKey(categoryId, bufferedUpdate.updateId)
+          const status = statuses.get(bufferedUpdate.updateId) ?? 'persisted'
+          bufferedUpdate.resolve({ canvasId: categoryId, updateId: bufferedUpdate.updateId, status })
+          if (this.pendingUpdates.get(pendingKey) === bufferedUpdate) {
+            this.pendingUpdates.delete(pendingKey)
+          }
+          this.rememberPersistedUpdate(pendingKey)
+        }
 
-        this.logger.log(`[Yjs] Flushed ${updates.length} updates for category ${categoryId}`)
+        this.logger.log(`[Yjs] Durably flushed ${bufferedUpdates.length} updates for category ${categoryId}`)
       } catch (err) {
         this.logger.error(`Flush failed for ${categoryId}, restoring buffer...`, err)
 
-        // [DB Flush 실패 시 업데이트 로그 복구 로직]
-        // 1. 현재 버퍼에 쌓인 데이터 가져오기 (Flush 도중 새로 들어온 데이터)
         const newUpdates = this.updateBuffer.get(categoryId) || []
-
-        // 2. 실패한 데이터(updates)를 앞에, 새 데이터(newUpdates)를 뒤에 붙여서 복구 (순서: 실패한 과거 데이터 -> 새로 들어온 최신 데이터)
-        this.updateBuffer.set(categoryId, [...updates, ...newUpdates])
+        this.updateBuffer.set(categoryId, [...bufferedUpdates, ...newUpdates])
         continue
       }
 
