@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import type { Socket } from 'socket.io-client'
 import { encodeStateVector } from 'yjs'
 import type { AwarenessState, CanvasAttachPayload, CanvasDetachPayload, YjsAwarenessPayload, YjsUpdateAck, YjsUpdatePayload } from '@/shared/types'
@@ -23,14 +23,24 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
   const syncReadyRef = useRef(false)
   const durableAckSupportedRef = useRef(false)
   const durableOutboxRef = useRef(new YjsDurableOutbox())
+  const [isOutboxPersistenceReady, setIsOutboxPersistenceReady] = useState(false)
 
   const applyAwareness = useCursorPresenceStore(state => state.applyAwareness)
   const clearCursors = useCursorPresenceStore(state => state.clearCursors)
 
-  const { docRef, localOriginRef, localMaxTimestampRef, sharedTypes, postits, placeCards, lines, textBoxes, zIndexOrder } = useYjsDoc({
-    roomId,
-    canvasId,
-  })
+  const {
+    docRef,
+    localPersistenceRef,
+    isLocalPersistenceReady,
+    localOriginRef,
+    localMaxTimestampRef,
+    sharedTypes,
+    postits,
+    placeCards,
+    lines,
+    textBoxes,
+    zIndexOrder,
+  } = useYjsDoc({ roomId, canvasId })
 
   const handleSocketError = useCallback(
     (error: Error) => {
@@ -88,7 +98,8 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
     baseUrl: socketBaseUrl,
     onError: handleSocketError,
   })
-  const isConnected = status === 'connected'
+  const isPersistenceReady = isLocalPersistenceReady && isOutboxPersistenceReady
+  const isConnected = status === 'connected' && isPersistenceReady
 
   useEffect(() => {
     canvasIdRef.current = canvasId
@@ -119,9 +130,62 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
     [trackHighFreqRef],
   )
 
+  useEffect(() => {
+    const outbox = durableOutboxRef.current
+    let disposed = false
+    let unsubscribe: (() => void) | undefined
+    let writeQueue: Promise<void> | null = null
+
+    outbox.clear()
+    setIsOutboxPersistenceReady(false)
+
+    if (!isLocalPersistenceReady) return
+
+    const persistence = localPersistenceRef.current
+    if (!persistence) {
+      setIsOutboxPersistenceReady(true)
+      return () => outbox.clear()
+    }
+
+    void persistence
+      .loadOutbox()
+      .then(payloads => {
+        if (disposed) return
+
+        outbox.restore(payloads, canvasId)
+        unsubscribe = outbox.subscribe(snapshot => {
+          const save = writeQueue ? writeQueue.then(() => persistence.saveOutbox(snapshot)) : persistence.saveOutbox(snapshot)
+          writeQueue = save.catch(error => {
+            reportError({
+              error,
+              code: 'CLIENT_UNKNOWN',
+              level: 'warning',
+              context: { source: 'yjs_outbox_save', roomId, canvasId },
+            })
+          })
+        })
+        setIsOutboxPersistenceReady(true)
+      })
+      .catch(error => {
+        reportError({
+          error,
+          code: 'CLIENT_UNKNOWN',
+          level: 'warning',
+          context: { source: 'yjs_outbox_load', roomId, canvasId },
+        })
+        if (!disposed) setIsOutboxPersistenceReady(true)
+      })
+
+    return () => {
+      disposed = true
+      unsubscribe?.()
+      outbox.clear()
+    }
+  }, [roomId, canvasId, isLocalPersistenceReady, localPersistenceRef])
+
   useYjsSocketEvents({
     resolveSocket: getSocket,
-    enabled: status !== 'disconnected',
+    enabled: isPersistenceReady && status !== 'disconnected',
     roomId,
     canvasId,
     docRef,
@@ -132,14 +196,11 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
     onSynced: markSyncReady,
   })
 
-  useEffect(() => {
-    const outbox = durableOutboxRef.current
-    return () => outbox.clear()
-  }, [canvasId])
-
   const updateCursorThrottledRef = useRef<ThrottledFunction<[number, number]> | null>(null)
 
   useEffect(() => {
+    if (!isPersistenceReady) return
+
     const socket = getSocket()
     if (!socket) return
 
@@ -210,7 +271,7 @@ export function useYjsSocket({ roomId, canvasId, userName }: UseYjsSocketOptions
         socketRef.current = null
       }
     }
-  }, [roomId, canvasId, getSocket, clearCursors, status, docRef, socketRef, emitAwareness, emitDurablePayload])
+  }, [roomId, canvasId, getSocket, clearCursors, status, docRef, socketRef, emitAwareness, emitDurablePayload, isPersistenceReady])
 
   useEffect(() => {
     const throttled = throttle((x: number, y: number) => {
