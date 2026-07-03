@@ -5,6 +5,23 @@ on: pull_request
 jobs:
   cache-and-install:
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://myuser:mypassword@localhost:5432/mydb?schema=public
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: myuser
+          POSTGRES_PASSWORD: mypassword
+          POSTGRES_DB: mydb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U myuser -d mydb"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Checkout
@@ -33,3 +50,9 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Apply Test Database Migrations
+        run: pnpm --filter backend exec prisma migrate deploy
+
+      - name: Yjs Recovery E2E
+        run: pnpm --filter backend test:e2e:recovery
