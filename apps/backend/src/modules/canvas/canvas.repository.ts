@@ -10,6 +10,13 @@ export interface YjsCompactionResult {
   lastLogId?: bigint
 }
 
+export interface DurableYjsUpdate {
+  updateId: string
+  update: Uint8Array
+}
+
+export type DurableYjsUpdateStatus = 'persisted' | 'duplicate'
+
 @Injectable()
 export class CanvasRepository {
   constructor(private readonly prisma: PrismaService) {}
@@ -40,15 +47,45 @@ export class CanvasRepository {
   }
 
   /**
-   * 업데이트 로그 저장 (Uint8Array -> DB)
+   * 여러 Yjs update를 하나의 로그로 병합해 저장하고 각 update ID의 receipt를 남긴다.
+   * 이미 receipt가 존재하는 update는 다시 로그에 포함하지 않는다.
    */
-  async saveUpdateLog(categoryId: string, update: Uint8Array): Promise<void> {
-    await this.prisma.categoryUpdateLog.create({
-      data: {
-        categoryId,
-        updateData: Buffer.from(update),
+  async saveDurableUpdates(categoryId: string, updates: DurableYjsUpdate[]): Promise<Map<string, DurableYjsUpdateStatus>> {
+    return this.prisma.$transaction(
+      async transaction => {
+        const uniqueUpdates = [...new Map(updates.map(update => [update.updateId, update])).values()]
+        const existingReceipts = await transaction.categoryUpdateReceipt.findMany({
+          where: {
+            categoryId,
+            updateId: { in: uniqueUpdates.map(update => update.updateId) },
+          },
+          select: { updateId: true },
+        })
+        const existingIds = new Set(existingReceipts.map(receipt => receipt.updateId))
+        const newUpdates = uniqueUpdates.filter(update => !existingIds.has(update.updateId))
+
+        if (newUpdates.length > 0) {
+          const mergedUpdate = Y.mergeUpdates(newUpdates.map(update => update.update))
+          await transaction.categoryUpdateLog.create({
+            data: {
+              categoryId,
+              updateData: Buffer.from(mergedUpdate),
+            },
+          })
+          await transaction.categoryUpdateReceipt.createMany({
+            data: newUpdates.map(update => ({
+              categoryId,
+              updateId: update.updateId,
+            })),
+          })
+        }
+
+        return new Map(
+          uniqueUpdates.map(update => [update.updateId, existingIds.has(update.updateId) ? ('duplicate' as const) : ('persisted' as const)]),
+        )
       },
-    })
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    )
   }
 
   /**

@@ -14,6 +14,10 @@ describe('CanvasRepository', () => {
       create: jest.Mock
       deleteMany: jest.Mock
     }
+    categoryUpdateReceipt: {
+      findMany: jest.Mock
+      createMany: jest.Mock
+    }
     categorySnapshot: {
       findUnique: jest.Mock
       upsert: jest.Mock
@@ -28,6 +32,10 @@ describe('CanvasRepository', () => {
         findMany: jest.fn(),
         create: jest.fn(),
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+      categoryUpdateReceipt: {
+        findMany: jest.fn().mockResolvedValue([]),
+        createMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       categorySnapshot: {
         findUnique: jest.fn().mockResolvedValue(null),
@@ -124,18 +132,77 @@ describe('CanvasRepository', () => {
     })
   })
 
-  describe('saveUpdateLog', () => {
-    it('업데이트 로그를 DB에 저장해야 한다', async () => {
-      const update = new Uint8Array([1, 2, 3])
+  describe('saveDurableUpdates', () => {
+    it('새 update들을 하나의 로그로 병합하고 receipt와 함께 저장해야 한다', async () => {
+      const doc = new Y.Doc()
+      doc.getText('content').insert(0, 'A')
+      const update1 = Y.encodeStateAsUpdate(doc)
+      const stateAfterUpdate1 = Y.encodeStateVector(doc)
+      doc.getText('content').insert(1, 'B')
+      const update2 = Y.encodeStateAsUpdate(doc, stateAfterUpdate1)
+      let capturedCreate: Prisma.CategoryUpdateLogCreateArgs | undefined
+      mockPrisma.categoryUpdateLog.create.mockImplementation((args: Prisma.CategoryUpdateLogCreateArgs) => {
+        capturedCreate = args
+        return Promise.resolve()
+      })
 
-      await repository.saveUpdateLog('cat-1', update)
+      const result = await repository.saveDurableUpdates('cat-1', [
+        { updateId: '00000000-0000-4000-8000-000000000001', update: update1 },
+        { updateId: '00000000-0000-4000-8000-000000000002', update: update2 },
+      ])
+
+      expect(capturedCreate).toBeDefined()
+      if (!capturedCreate) throw new Error('update log create가 호출되지 않았습니다.')
+      const restoredDoc = new Y.Doc()
+      Y.applyUpdate(restoredDoc, new Uint8Array(capturedCreate.data.updateData))
+
+      expect(restoredDoc.getText('content').toJSON()).toBe('AB')
+      expect(mockPrisma.categoryUpdateReceipt.createMany).toHaveBeenCalledWith({
+        data: [
+          { categoryId: 'cat-1', updateId: '00000000-0000-4000-8000-000000000001' },
+          { categoryId: 'cat-1', updateId: '00000000-0000-4000-8000-000000000002' },
+        ],
+      })
+      expect(result.get('00000000-0000-4000-8000-000000000001')).toBe('persisted')
+      expect(result.get('00000000-0000-4000-8000-000000000002')).toBe('persisted')
+    })
+
+    it('이미 receipt가 존재하는 update는 로그에 다시 포함하지 않아야 한다', async () => {
+      const duplicateId = '00000000-0000-4000-8000-000000000001'
+      const newId = '00000000-0000-4000-8000-000000000002'
+      const duplicateUpdate = new Uint8Array([0, 0])
+      const newDoc = new Y.Doc()
+      newDoc.getMap('fixture').set('new', true)
+      const newUpdate = Y.encodeStateAsUpdate(newDoc)
+      mockPrisma.categoryUpdateReceipt.findMany.mockResolvedValue([{ updateId: duplicateId }])
+
+      const result = await repository.saveDurableUpdates('cat-1', [
+        { updateId: duplicateId, update: duplicateUpdate },
+        { updateId: newId, update: newUpdate },
+      ])
 
       expect(mockPrisma.categoryUpdateLog.create).toHaveBeenCalledWith({
         data: {
           categoryId: 'cat-1',
-          updateData: Buffer.from(update),
+          updateData: Buffer.from(newUpdate),
         },
       })
+      expect(mockPrisma.categoryUpdateReceipt.createMany).toHaveBeenCalledWith({
+        data: [{ categoryId: 'cat-1', updateId: newId }],
+      })
+      expect(result.get(duplicateId)).toBe('duplicate')
+      expect(result.get(newId)).toBe('persisted')
+    })
+
+    it('모든 update가 중복이면 로그와 receipt를 추가하지 않아야 한다', async () => {
+      const updateId = '00000000-0000-4000-8000-000000000001'
+      mockPrisma.categoryUpdateReceipt.findMany.mockResolvedValue([{ updateId }])
+
+      const result = await repository.saveDurableUpdates('cat-1', [{ updateId, update: new Uint8Array([0, 0]) }])
+
+      expect(mockPrisma.categoryUpdateLog.create).not.toHaveBeenCalled()
+      expect(mockPrisma.categoryUpdateReceipt.createMany).not.toHaveBeenCalled()
+      expect(result.get(updateId)).toBe('duplicate')
     })
   })
 
