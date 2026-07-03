@@ -12,7 +12,14 @@ export interface CanvasDetachPayload {
 
 export interface YjsUpdatePayload {
   canvasId: string
+  updateId: string
   update: number[]
+}
+
+export interface YjsUpdateAck {
+  canvasId: string
+  updateId: string
+  status: 'persisted' | 'duplicate'
 }
 
 export interface CursorInfo {
@@ -38,10 +45,12 @@ export interface CanvasAttachedPayload {
   docKey: string
   update?: number[]
   serverStateVector?: number[]
+  durableAckSupported?: boolean
 }
 
 export interface YjsUpdateBroadcast {
   canvasId: string
+  updateId?: string
   update: number[]
 }
 

@@ -29,6 +29,8 @@ describe('useYjsSocketEvents', () => {
     const off = vi.fn()
     const emit = vi.fn()
     const socket = { on, off, emit } as unknown as Socket
+    const onReconciledUpdate = vi.fn()
+    const onDurableAckCapability = vi.fn()
     const targetDoc = new Y.Doc()
     const sourceDoc = new Y.Doc()
     sourceDoc.getMap('fixture').set('loaded', true)
@@ -41,6 +43,8 @@ describe('useYjsSocketEvents', () => {
         docRef: { current: targetDoc },
         applyAwareness: vi.fn(),
         trackHighFreq: vi.fn(),
+        onDurableAckCapability,
+        onReconciledUpdate,
       })
       return null
     }
@@ -58,6 +62,8 @@ describe('useYjsSocketEvents', () => {
     })
 
     expect(targetDoc.getMap('fixture').get('loaded')).toBe(true)
+    expect(onDurableAckCapability).toHaveBeenCalledWith(false)
+    expect(onReconciledUpdate).toHaveBeenCalledWith(null)
     expect(emit).not.toHaveBeenCalledWith(YJS_EVENTS.update, expect.anything())
 
     sourceDoc.destroy()
@@ -70,6 +76,8 @@ describe('useYjsSocketEvents', () => {
     const emit = vi.fn()
     const socket = { on, off, emit } as unknown as Socket
     const onSynced = vi.fn()
+    const onReconciledUpdate = vi.fn()
+    const onDurableAckCapability = vi.fn()
     const serverDoc = new Y.Doc()
     const clientDoc = new Y.Doc()
 
@@ -90,6 +98,8 @@ describe('useYjsSocketEvents', () => {
         docRef: { current: clientDoc },
         applyAwareness: vi.fn(),
         trackHighFreq: vi.fn(),
+        onDurableAckCapability,
+        onReconciledUpdate,
         onSynced,
       })
       return null
@@ -100,19 +110,20 @@ describe('useYjsSocketEvents', () => {
     const handleAttached = on.mock.calls.find(([event]) => event === CANVAS_EVENTS.attached)?.[1] as (payload: {
       update: number[]
       serverStateVector: number[]
+      durableAckSupported?: boolean
     }) => void
 
     handleAttached({
       update: Array.from(Y.encodeStateAsUpdate(serverDoc, Y.encodeStateVector(clientDoc))),
       serverStateVector: Array.from(Y.encodeStateVector(serverDoc)),
+      durableAckSupported: true,
     })
 
-    const syncEmit = emit.mock.calls.find(([event]) => event === YJS_EVENTS.update)
-    expect(syncEmit).toBeDefined()
-
-    const payload = syncEmit?.[1] as { canvasId: string; update: number[] }
-    expect(payload.canvasId).toBe('canvas-id')
-    Y.applyUpdate(serverDoc, new Uint8Array(payload.update))
+    expect(onReconciledUpdate).toHaveBeenCalledOnce()
+    expect(onDurableAckCapability).toHaveBeenCalledWith(true)
+    const clientUpdate = onReconciledUpdate.mock.calls[0][0] as Uint8Array
+    Y.applyUpdate(serverDoc, clientUpdate)
+    expect(emit).not.toHaveBeenCalledWith(YJS_EVENTS.update, expect.anything())
 
     expect(clientDoc.getMap('fixture').toJSON()).toEqual({
       base: true,
@@ -132,6 +143,7 @@ describe('useYjsSocketEvents', () => {
     const off = vi.fn()
     const emit = vi.fn()
     const socket = { on, off, emit } as unknown as Socket
+    const onDurableAckCapability = vi.fn()
     const targetDoc = new Y.Doc()
     const sourceDoc = new Y.Doc()
     sourceDoc.getMap('fixture').set('loaded', true)
@@ -144,6 +156,7 @@ describe('useYjsSocketEvents', () => {
         docRef: { current: targetDoc },
         applyAwareness: vi.fn(),
         trackHighFreq: vi.fn(),
+        onDurableAckCapability,
       })
       return null
     }
@@ -154,6 +167,7 @@ describe('useYjsSocketEvents', () => {
     handleAttached({ update: Array.from(Y.encodeStateAsUpdate(sourceDoc)) })
 
     expect(targetDoc.getMap('fixture').get('loaded')).toBe(true)
+    expect(onDurableAckCapability).toHaveBeenCalledWith(false)
     expect(emit).not.toHaveBeenCalledWith(YJS_EVENTS.update, expect.anything())
 
     sourceDoc.destroy()
