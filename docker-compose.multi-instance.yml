@@ -1,0 +1,107 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypassword
+      POSTGRES_DB: mydb
+    ports:
+      - '55432:5432'
+    volumes:
+      - multi_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U myuser -d mydb']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '56379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend-a:
+    image: justhere-backend:multi-instance
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    environment:
+      PORT: 3000
+      HOSTNAME: backend-a
+      DATABASE_URL: postgresql://myuser:mypassword@postgres:5432/mydb?schema=public
+      REDIS_URL: redis://redis:6379
+      APP_BASE_URL: http://localhost:3100
+    ports:
+      - '3101:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '-', 'http://localhost:3000/api/health']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend-b:
+    image: justhere-backend:multi-instance
+    environment:
+      PORT: 3000
+      HOSTNAME: backend-b
+      DATABASE_URL: postgresql://myuser:mypassword@postgres:5432/mydb?schema=public
+      REDIS_URL: redis://redis:6379
+      APP_BASE_URL: http://localhost:3100
+    ports:
+      - '3102:3000'
+    depends_on:
+      backend-a:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '-', 'http://localhost:3000/api/health']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  gateway:
+    image: nginx:1.27-alpine
+    ports:
+      - '3100:80'
+    volumes:
+      - ./docker/nginx/multi-instance.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      backend-a:
+        condition: service_healthy
+      backend-b:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - '39090:9090'
+    volumes:
+      - ./docker/prometheus/prometheus.multi-instance.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      backend-a:
+        condition: service_healthy
+      backend-b:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - '3300:3000'
+    depends_on:
+      - prometheus
+
+volumes:
+  multi_postgres_data:
