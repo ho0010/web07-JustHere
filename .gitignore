@@ -29,3 +29,5 @@ Thumbs.db
 
 # raw performance captures
 /docs/performance/results/raw/
+
+auto*
