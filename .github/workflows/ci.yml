@@ -64,6 +64,10 @@ jobs:
         run: pnpm --filter backend exec prisma migrate deploy
 
       - name: Yjs Recovery E2E
+        # This E2E boots the real AppModule. It does not call Google Places,
+        # but GoogleService still validates its required startup configuration.
+        env:
+          GOOGLE_MAPS_API_KEY: ci-placeholder-not-used
         run: pnpm --filter backend test:e2e:recovery
 
       - name: Socket.IO Multi-instance E2E
