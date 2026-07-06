@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: 'nestjs-backend-multi-instance'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['backend-a:3000', 'backend-b:3000']
+        labels:
+          env: 'local-multi-instance'
