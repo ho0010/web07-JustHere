@@ -14,7 +14,7 @@ Backend A Y.Doc ≠ Backend B Y.Doc
 
 기존 구조에서는 다음 순서로 정합성 간극이 발생할 수 있었다.
 
-1. Backend A가 Yjs update를 메모리에 적용하고 즉시 Redis로 방송한다.
+1. Backend A가 Yjs update를 메모리에 적용하고 즉시 Redis로 전파한다.
 2. DB 저장은 5초 주기 buffer flush까지 기다린다.
 3. Backend B는 이벤트를 클라이언트에 전달하지만 자신의 Y.Doc에는 적용하지 않는다.
 4. 이 사이 Backend B로 새 클라이언트가 접속하면 오래된 메모리 Y.Doc을 초기 상태로 받을 수 있다.
@@ -23,9 +23,9 @@ Backend A Y.Doc ≠ Backend B Y.Doc
 
 ## 설계 선택
 
-### 1. 저장 완료 후 방송
+### 1. 저장 완료 후 전파
 
-Yjs update를 수신한 서버는 먼저 PostgreSQL transaction을 완료하고, `persisted` 결과를 받은 update만 room에 방송한다.
+Yjs update를 수신한 서버는 먼저 PostgreSQL transaction을 완료하고, `persisted` 결과를 받은 update만 room에 전파한다.
 
 ```text
 Client A local apply
@@ -36,7 +36,7 @@ Client A local apply
   → durable ack
 ```
 
-송신 클라이언트는 Y.Doc에 로컬 변경을 이미 적용하므로 DB 저장을 기다리는 동안 화면이 멈추지 않는다. 원격 클라이언트 전파는 micro-batch 구간과 DB transaction 시간만큼 늦어지지만, 방송된 변경은 신규 접속이 조회하는 DB에도 반드시 존재한다.
+송신 클라이언트는 Y.Doc에 로컬 변경을 이미 적용하므로 DB 저장을 기다리는 동안 화면이 멈추지 않는다. 원격 클라이언트 전파는 micro-batch 구간과 DB transaction 시간만큼 늦어지지만, 전파된 변경은 신규 접속이 조회하는 DB에도 반드시 존재한다.
 
 기존 5초 flush 주기는 기본 100ms micro-batch로 줄였다. `YJS_FLUSH_INTERVAL_MS` 환경 변수로 조정할 수 있으며 10ms 미만의 값은 사용하지 않는다.
 
@@ -44,13 +44,13 @@ Client A local apply
 
 서버 메모리에 Y.Doc이 이미 있어도 `canvas:attach`마다 PostgreSQL snapshot과 update log를 다시 읽어 병합한다. PostgreSQL을 인스턴스 간 reconciliation point로 사용하므로 Backend A가 저장한 변경을 Backend B의 신규 접속도 얻는다.
 
-attach 처리에서는 먼저 Socket.IO room에 참여한다. DB 조회 도중 새로운 update가 commit되면 DB 조회에 포함되거나, commit 후 방송되는 room 이벤트로 수신하므로 경계 시점의 변경도 놓치지 않는다.
+attach 처리에서는 먼저 Socket.IO room에 참여한다. DB 조회 도중 새로운 update가 commit되면 DB 조회에 포함되거나, commit 후 전파되는 room 이벤트로 수신하므로 경계 시점의 변경도 놓치지 않는다.
 
 ### 3. 동일 update ID 동시 저장 재시도
 
 durable update는 `(category_id, update_id)` 복합 기본 키를 가진 receipt로 멱등성을 보장한다. 두 인스턴스가 같은 update ID를 동시에 저장하면 Serializable transaction 충돌(`P2034`) 또는 receipt unique 충돌(`P2002`)이 발생할 수 있다.
 
-저장 transaction은 지수 backoff와 함께 최대 4회 재시도한다. 먼저 commit한 인스턴스는 `persisted`, 재시도 후 receipt를 확인한 인스턴스는 `duplicate`를 반환한다. `duplicate` update는 다시 방송하지 않는다.
+저장 transaction은 지수 backoff와 함께 최대 4회 재시도한다. 먼저 commit한 인스턴스는 `persisted`, 재시도 후 receipt를 확인한 인스턴스는 `duplicate`를 반환한다. `duplicate` update는 다시 전파하지 않는다.
 
 ### 4. 카테고리 단위 compaction 직렬화
 
