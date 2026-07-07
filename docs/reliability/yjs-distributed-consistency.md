@@ -102,4 +102,4 @@ pnpm --filter backend test:e2e:distributed-consistency
 - 여러 서버에 분산된 awareness 상태 복구
 - 운영 환경 네트워크 지연과 처리량을 반영한 100ms micro-batch 튜닝
 
-다음 `test/yjs-multi-instance-failover` 작업에서는 서버 강제 종료, 클라이언트 재접속, IndexedDB outbox 재전송, 최종 DB 상태 수렴을 하나의 E2E로 검증한다.
+후속 검증은 [서버 강제 종료 후 Yjs 변경을 다른 인스턴스에서 복구하기](./yjs-multi-instance-failover.md)에서 다룬다.
