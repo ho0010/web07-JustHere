@@ -97,14 +97,15 @@ export class CanvasGateway implements OnGatewayInit, OnGatewayDisconnect {
     // number[] -> Uint8Array
     const updateArray = new Uint8Array(update)
 
-    // 메모리에는 즉시 적용하되 durable ack는 DB transaction 완료 후 전송한다.
+    // 송신 클라이언트는 이미 로컬 Y.Doc에 적용했다. 서버는 DB 저장 완료 뒤에만
+    // 다른 인스턴스로 방송해 신규 접속의 DB 상태와 실시간 이벤트 순서를 맞춘다.
     const processed = this.canvasService.processUpdate(canvasId, updateId, updateArray)
+    const ack = await processed.persisted
 
-    if (processed.shouldBroadcast) {
+    if (processed.shouldBroadcast && ack.status === 'persisted') {
       this.broadcaster.emitToCanvas(canvasId, 'y:update', { ...payload, updateId }, { exceptSocketId: client.id })
     }
 
-    const ack = await processed.persisted
     client.emit('y:update:ack', ack)
   }
 

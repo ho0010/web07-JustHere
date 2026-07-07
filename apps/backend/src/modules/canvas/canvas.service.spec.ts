@@ -92,16 +92,24 @@ describe('YjsService', () => {
       expect(clientDoc.getText('test').toString()).toBe('hello')
     })
 
-    it('이미 메모리에 로드된 문서가 있다면 DB 조회 없이 반환해야 한다', async () => {
-      mockRepository.getMergedUpdate.mockResolvedValue(new Uint8Array())
+    it('이미 메모리에 로드된 문서도 접속 시 DB의 최신 변경을 다시 병합해야 한다', async () => {
+      mockRepository.getMergedUpdate.mockResolvedValueOnce(new Uint8Array())
 
-      // 첫 번째 호출 (DB 조회 발생)
       await service.initializeConnection(roomId, categoryId, socketId)
 
-      // 두 번째 호출 (메모리 캐시 사용)
-      await service.initializeConnection(roomId, categoryId, 'socket-2')
+      const remoteDoc = new Y.Doc()
+      remoteDoc.getMap('fixture').set('from-backend-a', true)
+      mockRepository.getMergedUpdate.mockResolvedValueOnce(Y.encodeStateAsUpdate(remoteDoc))
 
-      expect(mockRepository.getMergedUpdate).toHaveBeenCalledTimes(1)
+      const refreshed = await service.initializeConnection(roomId, categoryId, 'socket-2')
+      const clientDoc = new Y.Doc()
+      Y.applyUpdate(clientDoc, new Uint8Array(refreshed.update!))
+
+      expect(mockRepository.getMergedUpdate).toHaveBeenCalledTimes(2)
+      expect(clientDoc.getMap('fixture').get('from-backend-a')).toBe(true)
+
+      clientDoc.destroy()
+      remoteDoc.destroy()
     })
 
     it('DB에서 문서 로드 실패 시 InternalServerError 예외를 던져야 한다', async () => {
@@ -399,7 +407,7 @@ describe('YjsService', () => {
       service.onModuleInit()
 
       // 2. 시간 앞당기기
-      jest.advanceTimersByTime(5000)
+      jest.advanceTimersByTime(100)
       await Promise.resolve() // 마이크로태스크 큐 처리
 
       expect(capturedUpdates).toHaveLength(1)
@@ -418,8 +426,7 @@ describe('YjsService', () => {
       })
       service.processUpdate(categoryId, updateId(21), update)
 
-      service.onModuleDestroy()
-      await Promise.resolve()
+      await service.onModuleDestroy()
 
       expect(capturedUpdates).toHaveLength(1)
       expect(capturedUpdates[0].updateId).toBe(updateId(21))
@@ -427,10 +434,39 @@ describe('YjsService', () => {
     })
 
     it('버퍼가 비어있으면 DB 저장을 수행하지 않아야 한다', async () => {
-      service.onModuleDestroy()
-      await Promise.resolve()
+      await service.onModuleDestroy()
 
       expect(mockRepository.saveDurableUpdates).not.toHaveBeenCalled()
+    })
+
+    it('onModuleDestroy: 진행 중인 저장이 끝날 때까지 종료를 기다려야 한다', async () => {
+      const doc = new Y.Doc()
+      doc.getMap('fixture').set('drain', true)
+      service.processUpdate(categoryId, updateId(26), Y.encodeStateAsUpdate(doc))
+
+      let completeSave!: (statuses: Map<string, 'persisted'>) => void
+      mockRepository.saveDurableUpdates.mockReturnValueOnce(
+        new Promise(resolve => {
+          completeSave = resolve
+        }),
+      )
+
+      const backgroundFlush = service.flushBufferToDB()
+      await Promise.resolve()
+
+      let destroyed = false
+      const destroyPromise = service.onModuleDestroy().then(() => {
+        destroyed = true
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(destroyed).toBe(false)
+
+      completeSave(new Map([[updateId(26), 'persisted']]))
+      await backgroundFlush
+      await destroyPromise
+      expect(destroyed).toBe(true)
     })
 
     it('update log 저장 성공 후 compaction 임계값을 확인해야 한다', async () => {

@@ -22,6 +22,7 @@ describe('CanvasRepository', () => {
       findUnique: jest.Mock
       upsert: jest.Mock
     }
+    $queryRaw: jest.Mock
     $transaction: jest.Mock
   }
 
@@ -41,6 +42,7 @@ describe('CanvasRepository', () => {
         findUnique: jest.fn().mockResolvedValue(null),
         upsert: jest.fn().mockResolvedValue(undefined),
       },
+      $queryRaw: jest.fn().mockResolvedValue([]),
       $transaction: jest.fn(),
     }
     mockPrisma.$transaction.mockImplementation((input: unknown) => {
@@ -204,6 +206,20 @@ describe('CanvasRepository', () => {
       expect(mockPrisma.categoryUpdateReceipt.createMany).not.toHaveBeenCalled()
       expect(result.get(updateId)).toBe('duplicate')
     })
+
+    it('동시 저장 transaction 충돌은 제한된 횟수 안에서 재시도해야 한다', async () => {
+      const transactionConflict = Object.assign(new Error('serialization conflict'), { code: 'P2034' })
+      mockPrisma.$transaction.mockRejectedValueOnce(transactionConflict)
+
+      const updateId = '00000000-0000-4000-8000-000000000003'
+      const doc = new Y.Doc()
+      doc.getMap('fixture').set('retry', true)
+
+      const result = await repository.saveDurableUpdates('cat-1', [{ updateId, update: Y.encodeStateAsUpdate(doc) }])
+
+      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(2)
+      expect(result.get(updateId)).toBe('persisted')
+    })
   })
 
   describe('compactUpdateLogs', () => {
@@ -213,6 +229,7 @@ describe('CanvasRepository', () => {
       const result = await repository.compactUpdateLogs('cat-1', 2)
 
       expect(result).toEqual({ compacted: false, compactedLogCount: 0 })
+      expect(mockPrisma.$queryRaw).toHaveBeenCalledTimes(1)
       expect(mockPrisma.categorySnapshot.findUnique).not.toHaveBeenCalled()
       expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1)
     })

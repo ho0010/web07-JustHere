@@ -148,7 +148,7 @@ describe('CanvasGateway', () => {
   })
 
   describe('onYjsUpdate', () => {
-    it('Yjs 업데이트를 즉시 브로드캐스트하고 DB 저장 후 ack해야 한다', async () => {
+    it('Yjs 업데이트를 DB에 저장한 뒤 브로드캐스트하고 ack해야 한다', async () => {
       const payload: YjsUpdatePayload = {
         canvasId: 'canvas-1',
         updateId: '00000000-0000-4000-8000-000000000001',
@@ -165,6 +165,52 @@ describe('CanvasGateway', () => {
         canvasId: payload.canvasId,
         updateId: payload.updateId,
         status: 'persisted',
+      })
+    })
+
+    it('DB 저장이 완료되기 전에는 다른 인스턴스로 브로드캐스트하지 않아야 한다', async () => {
+      const payload: YjsUpdatePayload = {
+        canvasId: 'canvas-1',
+        updateId: '00000000-0000-4000-8000-000000000002',
+        update: [1, 2, 3],
+      }
+      let completeSave!: (ack: { canvasId: string; updateId: string; status: 'persisted' }) => void
+      mockYjsService.processUpdate.mockReturnValue({
+        shouldBroadcast: true,
+        persisted: new Promise(resolve => {
+          completeSave = resolve
+        }),
+      })
+
+      const handling = gateway.onYjsUpdate(mockSocket, payload)
+      await Promise.resolve()
+      expect(mockBroadcaster.emitToCanvas).not.toHaveBeenCalled()
+
+      completeSave({ canvasId: payload.canvasId, updateId: payload.updateId!, status: 'persisted' })
+      await handling
+
+      expect(mockBroadcaster.emitToCanvas).toHaveBeenCalledTimes(1)
+    })
+
+    it('다른 인스턴스가 먼저 저장한 update는 중복 브로드캐스트하지 않아야 한다', async () => {
+      const payload: YjsUpdatePayload = {
+        canvasId: 'canvas-1',
+        updateId: '00000000-0000-4000-8000-000000000003',
+        update: [1, 2, 3],
+      }
+      mockYjsService.processUpdate.mockReturnValue({
+        shouldBroadcast: true,
+        persisted: Promise.resolve({ canvasId: payload.canvasId, updateId: payload.updateId, status: 'duplicate' }),
+      })
+
+      await gateway.onYjsUpdate(mockSocket, payload)
+
+      expect(mockBroadcaster.emitToCanvas).not.toHaveBeenCalled()
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(mockSocket.emit).toHaveBeenCalledWith('y:update:ack', {
+        canvasId: payload.canvasId,
+        updateId: payload.updateId,
+        status: 'duplicate',
       })
     })
 
