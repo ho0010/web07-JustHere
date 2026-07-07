@@ -79,3 +79,8 @@ jobs:
         env:
           REDIS_URL: redis://localhost:6379
         run: pnpm --filter backend test:e2e:distributed-consistency
+
+      - name: Yjs Multi-instance Failover E2E
+        env:
+          REDIS_URL: redis://localhost:6379
+        run: pnpm --filter backend test:e2e:failover
