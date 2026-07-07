@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common'
+import { Injectable, Logger } from '@nestjs/common'
 import { PrismaService } from '@/lib/prisma/prisma.service'
 import { Prisma } from '@prisma/client'
 import * as Y from 'yjs'
@@ -17,8 +17,13 @@ export interface DurableYjsUpdate {
 
 export type DurableYjsUpdateStatus = 'persisted' | 'duplicate'
 
+const TRANSACTION_MAX_ATTEMPTS = 4
+const TRANSACTION_RETRY_BASE_DELAY_MS = 10
+
 @Injectable()
 export class CanvasRepository {
+  private readonly logger = new Logger(CanvasRepository.name)
+
   constructor(private readonly prisma: PrismaService) {}
 
   /**
@@ -51,40 +56,42 @@ export class CanvasRepository {
    * 이미 receipt가 존재하는 update는 다시 로그에 포함하지 않는다.
    */
   async saveDurableUpdates(categoryId: string, updates: DurableYjsUpdate[]): Promise<Map<string, DurableYjsUpdateStatus>> {
-    return this.prisma.$transaction(
-      async transaction => {
-        const uniqueUpdates = [...new Map(updates.map(update => [update.updateId, update])).values()]
-        const existingReceipts = await transaction.categoryUpdateReceipt.findMany({
-          where: {
-            categoryId,
-            updateId: { in: uniqueUpdates.map(update => update.updateId) },
-          },
-          select: { updateId: true },
-        })
-        const existingIds = new Set(existingReceipts.map(receipt => receipt.updateId))
-        const newUpdates = uniqueUpdates.filter(update => !existingIds.has(update.updateId))
-
-        if (newUpdates.length > 0) {
-          const mergedUpdate = Y.mergeUpdates(newUpdates.map(update => update.update))
-          await transaction.categoryUpdateLog.create({
-            data: {
+    return this.withTransactionRetry('save durable Yjs updates', () =>
+      this.prisma.$transaction(
+        async transaction => {
+          const uniqueUpdates = [...new Map(updates.map(update => [update.updateId, update])).values()]
+          const existingReceipts = await transaction.categoryUpdateReceipt.findMany({
+            where: {
               categoryId,
-              updateData: Buffer.from(mergedUpdate),
+              updateId: { in: uniqueUpdates.map(update => update.updateId) },
             },
+            select: { updateId: true },
           })
-          await transaction.categoryUpdateReceipt.createMany({
-            data: newUpdates.map(update => ({
-              categoryId,
-              updateId: update.updateId,
-            })),
-          })
-        }
+          const existingIds = new Set(existingReceipts.map(receipt => receipt.updateId))
+          const newUpdates = uniqueUpdates.filter(update => !existingIds.has(update.updateId))
 
-        return new Map(
-          uniqueUpdates.map(update => [update.updateId, existingIds.has(update.updateId) ? ('duplicate' as const) : ('persisted' as const)]),
-        )
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+          if (newUpdates.length > 0) {
+            const mergedUpdate = Y.mergeUpdates(newUpdates.map(update => update.update))
+            await transaction.categoryUpdateLog.create({
+              data: {
+                categoryId,
+                updateData: Buffer.from(mergedUpdate),
+              },
+            })
+            await transaction.categoryUpdateReceipt.createMany({
+              data: newUpdates.map(update => ({
+                categoryId,
+                updateId: update.updateId,
+              })),
+            })
+          }
+
+          return new Map(
+            uniqueUpdates.map(update => [update.updateId, existingIds.has(update.updateId) ? ('duplicate' as const) : ('persisted' as const)]),
+          )
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      ),
     )
   }
 
@@ -95,53 +102,82 @@ export class CanvasRepository {
    * snapshot upsert와 로그 삭제는 하나의 transaction으로 처리한다.
    */
   async compactUpdateLogs(categoryId: string, threshold: number): Promise<YjsCompactionResult> {
-    return this.prisma.$transaction(
-      async transaction => {
-        const logs = await transaction.categoryUpdateLog.findMany({
-          where: { categoryId },
-          orderBy: { id: 'asc' },
-          take: threshold,
-        })
+    return this.withTransactionRetry('compact Yjs update logs', () =>
+      this.prisma.$transaction(
+        async transaction => {
+          // transaction advisory lock은 같은 category의 compaction만 직렬화하고
+          // 일반 update 저장은 막지 않는다. ReadCommitted를 사용해 lock 대기 후
+          // 선행 compaction이 만든 snapshot/삭제 결과를 읽는다.
+          await transaction.$queryRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${categoryId}, 0)) IS NULL AS lock_acquired`)
 
-        if (logs.length < threshold) {
-          return { compacted: false, compactedLogCount: 0 }
-        }
+          const logs = await transaction.categoryUpdateLog.findMany({
+            where: { categoryId },
+            orderBy: { id: 'asc' },
+            take: threshold,
+          })
 
-        const snapshot = await transaction.categorySnapshot.findUnique({
-          where: { categoryId },
-        })
-        const updates = [...(snapshot ? [new Uint8Array(snapshot.snapshotData)] : []), ...logs.map(log => new Uint8Array(log.updateData))]
-        const snapshotData = Y.mergeUpdates(updates)
-        const compactedLogIds = logs.map(log => log.id)
-        const lastLogId = logs[logs.length - 1].id
+          if (logs.length < threshold) {
+            return { compacted: false, compactedLogCount: 0 }
+          }
 
-        await transaction.categorySnapshot.upsert({
-          where: { categoryId },
-          create: {
-            categoryId,
-            snapshotData: Buffer.from(snapshotData),
+          const snapshot = await transaction.categorySnapshot.findUnique({
+            where: { categoryId },
+          })
+          const updates = [...(snapshot ? [new Uint8Array(snapshot.snapshotData)] : []), ...logs.map(log => new Uint8Array(log.updateData))]
+          const snapshotData = Y.mergeUpdates(updates)
+          const compactedLogIds = logs.map(log => log.id)
+          const lastLogId = logs[logs.length - 1].id
+
+          await transaction.categorySnapshot.upsert({
+            where: { categoryId },
+            create: {
+              categoryId,
+              snapshotData: Buffer.from(snapshotData),
+              lastLogId,
+            },
+            update: {
+              snapshotData: Buffer.from(snapshotData),
+              lastLogId,
+            },
+          })
+          await transaction.categoryUpdateLog.deleteMany({
+            where: {
+              categoryId,
+              id: { in: compactedLogIds },
+            },
+          })
+
+          return {
+            compacted: true,
+            compactedLogCount: logs.length,
+            snapshotByteLength: snapshotData.byteLength,
             lastLogId,
-          },
-          update: {
-            snapshotData: Buffer.from(snapshotData),
-            lastLogId,
-          },
-        })
-        await transaction.categoryUpdateLog.deleteMany({
-          where: {
-            categoryId,
-            id: { in: compactedLogIds },
-          },
-        })
-
-        return {
-          compacted: true,
-          compactedLogCount: logs.length,
-          snapshotByteLength: snapshotData.byteLength,
-          lastLogId,
-        }
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+          }
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+      ),
     )
+  }
+
+  private async withTransactionRetry<T>(operation: string, execute: () => Promise<T>): Promise<T> {
+    for (let attempt = 1; attempt <= TRANSACTION_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        return await execute()
+      } catch (error) {
+        if (!this.isRetryableTransactionError(error) || attempt === TRANSACTION_MAX_ATTEMPTS) throw error
+
+        const delayMs = TRANSACTION_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1)
+        this.logger.warn(`${operation} conflict; retrying (${attempt}/${TRANSACTION_MAX_ATTEMPTS}) after ${delayMs}ms`)
+        await new Promise(resolve => setTimeout(resolve, delayMs))
+      }
+    }
+
+    throw new Error(`${operation} retry loop ended unexpectedly`)
+  }
+
+  private isRetryableTransactionError(error: unknown) {
+    if (!error || typeof error !== 'object' || !('code' in error)) return false
+    const code = (error as { code?: unknown }).code
+    return code === 'P2034' || code === 'P2002'
   }
 }

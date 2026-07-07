@@ -30,6 +30,8 @@ interface BufferedYjsUpdate {
 }
 
 const YJS_COMPACTION_LOG_THRESHOLD = 100
+const DEFAULT_YJS_FLUSH_INTERVAL_MS = 100
+const YJS_SHUTDOWN_FLUSH_ATTEMPTS = 3
 const RECENTLY_PERSISTED_UPDATE_LIMIT = 5000
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -55,40 +57,62 @@ export class CanvasService implements OnModuleInit, OnModuleDestroy {
   private recentlyPersistedUpdates = new Map<string, true>()
 
   // 배치 저장 타이머
-  private saveInterval: NodeJS.Timeout
+  private saveInterval?: NodeJS.Timeout
+
+  // 동시에 요청된 flush를 순서대로 실행해 같은 버퍼를 중복 저장하지 않는다.
+  private flushQueue: Promise<void> = Promise.resolve()
+
+  private isShuttingDown = false
+
+  private readonly flushIntervalMs = this.getFlushIntervalMs()
 
   onModuleInit() {
-    // 5초마다 버퍼에 쌓인 데이터를 DB에 저장
+    // 짧은 micro-batch로 DB write 횟수를 줄이되, 인스턴스 간 전파 지연은 제한한다.
     this.saveInterval = setInterval(() => {
       void this.flushBufferToDB().catch(err => {
         this.logger.error('Background Flush Failed', err instanceof Error ? err.stack : err)
       })
-    }, 5000)
+    }, this.flushIntervalMs)
   }
 
-  onModuleDestroy() {
-    // 서버 종료 시 남은 데이터 강제 저장
-    clearInterval(this.saveInterval)
-    void this.flushBufferToDB().catch(err => {
-      this.logger.error('Final Flush Failed', err instanceof Error ? err.stack : err)
-    })
+  async onModuleDestroy() {
+    this.isShuttingDown = true
+    if (this.saveInterval) clearInterval(this.saveInterval)
+
+    // 버퍼가 이미 in-flight flush로 이동해 비어 보여도 그 작업 뒤에 종료 flush를
+    // 예약해 반드시 기다린다.
+    await this.flushBufferToDB()
+
+    // 일시 실패로 복구된 버퍼는 제한적으로 재시도한다.
+    for (let attempt = 2; attempt <= YJS_SHUTDOWN_FLUSH_ATTEMPTS && this.updateBuffer.size > 0; attempt += 1) {
+      await this.flushBufferToDB()
+    }
+
+    if (this.updateBuffer.size > 0) {
+      this.logger.error(`Final Flush Failed: ${this.updateBuffer.size} category buffer(s) remain`)
+    }
+  }
+
+  private getFlushIntervalMs() {
+    const configuredInterval = Number(process.env.YJS_FLUSH_INTERVAL_MS)
+    return Number.isFinite(configuredInterval) && configuredInterval >= 10 ? configuredInterval : DEFAULT_YJS_FLUSH_INTERVAL_MS
   }
 
   /**
-   * Category용 Yjs 문서 생성 또는 가져오기
-   * Y.Doc이 메모리에 없다면, DB에서 조회해서 메모리 초기화.
+   * Category용 Yjs 문서를 가져오고 DB의 공유 상태를 매 접속마다 병합한다.
+   *
+   * Redis Adapter는 클라이언트 이벤트만 전달하고 다른 프로세스의 Y.Doc은
+   * 갱신하지 않는다. 따라서 장기 캐시만 신뢰하지 않고 PostgreSQL을 인스턴스 간
+   * reconciliation point로 사용한다.
    */
-  private async getOrCreateDocument(roomId: string, categoryId: string): Promise<Y.Doc> {
+  private async getOrRefreshDocument(roomId: string, categoryId: string): Promise<Y.Doc> {
     const existing = this.documents.get(categoryId)
-    if (existing) return existing.doc
-
-    const doc = new Y.Doc()
+    const doc = existing?.doc ?? new Y.Doc()
 
     try {
-      // DB에서 기존 데이터 불러와서 병합
-      const initialUpdate = await this.canvasRepository.getMergedUpdate(categoryId)
-      if (initialUpdate.byteLength > 0) {
-        Y.applyUpdate(doc, initialUpdate)
+      const persistedUpdate = await this.canvasRepository.getMergedUpdate(categoryId)
+      if (persistedUpdate.byteLength > 0) {
+        Y.applyUpdate(doc, persistedUpdate)
       }
     } catch (error) {
       this.logger.error(`Failed to load document from DB: ${categoryId}`, error)
@@ -149,7 +173,7 @@ export class CanvasService implements OnModuleInit, OnModuleDestroy {
   async initializeConnection(roomId: string, categoryId: string, socketId: string, clientStateVector?: Uint8Array) {
     try {
       // 1. 문서 확보
-      const doc = await this.getOrCreateDocument(roomId, categoryId)
+      const doc = await this.getOrRefreshDocument(roomId, categoryId)
 
       // 2. 접속자 등록
       this.connectClient(categoryId, socketId)
@@ -187,6 +211,10 @@ export class CanvasService implements OnModuleInit, OnModuleDestroy {
    * 같은 update ID가 pending 또는 최근 저장 상태라면 다시 적용하거나 브로드캐스트하지 않는다.
    */
   processUpdate(categoryId: string, updateId: string, update: Uint8Array): ProcessedYjsUpdate {
+    if (this.isShuttingDown) {
+      throw new CustomException(ErrorType.InternalServerError, '서버 종료를 위해 캔버스 변경 저장을 마무리하고 있습니다.')
+    }
+
     const yjsDoc = this.documents.get(categoryId)
 
     if (!yjsDoc) {
@@ -256,7 +284,13 @@ export class CanvasService implements OnModuleInit, OnModuleDestroy {
   /**
    * YjsUpdateLog 버퍼 내용을 병합하여 DB에 저장 (Flush)
    */
-  async flushBufferToDB() {
+  flushBufferToDB(): Promise<void> {
+    const scheduledFlush = this.flushQueue.then(() => this.flushCurrentBufferToDB())
+    this.flushQueue = scheduledFlush.catch(() => undefined)
+    return scheduledFlush
+  }
+
+  private async flushCurrentBufferToDB() {
     if (this.updateBuffer.size === 0) return
 
     // 현재 버퍼의 스냅샷을 뜨고 맵을 비움 (동시성 이슈 방지)
