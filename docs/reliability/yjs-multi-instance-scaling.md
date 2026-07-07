@@ -16,7 +16,7 @@ Nginx
       PostgreSQL
 ```
 
-이번 단계의 범위는 **Socket.IO room의 인스턴스 간 전달**이다. 각 프로세스의 `CanvasService`가 보유한 Y.Doc과 update buffer의 정합성은 다음 `feat/yjs-distributed-consistency` 작업에서 다룬다. Redis Adapter가 이벤트를 전달한다고 서버 메모리의 Y.Doc까지 자동으로 동기화되는 것은 아니다.
+이번 단계의 범위는 **Socket.IO room의 인스턴스 간 전달**이다. Redis Adapter가 이벤트를 전달한다고 서버 메모리의 Y.Doc까지 자동으로 동기화되는 것은 아니다. 후속 작업은 [PostgreSQL을 공유 기준점으로 Yjs 다중 인스턴스 정합성 보장하기](./yjs-distributed-consistency.md)에서 다룬다.
 
 ## 구현
 
