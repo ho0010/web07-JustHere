@@ -22,6 +22,7 @@
     "test:e2e:recovery": "jest --config ./test/jest-e2e.json --no-watchman --runInBand --runTestsByPath test/yjs-recovery.e2e-spec.ts",
     "test:e2e:multi-instance": "jest --config ./test/jest-e2e.json --no-watchman --runInBand --runTestsByPath test/socket-redis-adapter.e2e-spec.ts",
     "test:e2e:distributed-consistency": "jest --config ./test/jest-e2e.json --no-watchman --runInBand --runTestsByPath test/yjs-distributed-consistency.e2e-spec.ts",
+    "test:e2e:failover": "jest --config ./test/jest-e2e.json --no-watchman --runInBand --runTestsByPath test/yjs-multi-instance-failover.e2e-spec.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
