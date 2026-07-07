@@ -74,3 +74,8 @@ jobs:
         env:
           REDIS_URL: redis://localhost:6379
         run: pnpm --filter backend test:e2e:multi-instance
+
+      - name: Yjs Distributed Consistency E2E
+        env:
+          REDIS_URL: redis://localhost:6379
+        run: pnpm --filter backend test:e2e:distributed-consistency
